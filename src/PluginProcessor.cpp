@@ -17,16 +17,23 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "STATE", createLayout())
 {
-    pPosition = apvts.getRawParameterValue ("position");
-    pSize     = apvts.getRawParameterValue ("size");
-    pPitch    = apvts.getRawParameterValue ("pitch");
-    pEnvelope = apvts.getRawParameterValue ("envelope");
-    pMix      = apvts.getRawParameterValue ("mix");
-    pFeedback = apvts.getRawParameterValue ("feedback");
-    pRecord   = apvts.getRawParameterValue ("record");
-    pPlay     = apvts.getRawParameterValue ("play");
-    pReverse  = apvts.getRawParameterValue ("reverse");
-    pOutLevel = apvts.getRawParameterValue ("outLevel");
+    for (int d = 0; d < 2; ++d)
+    {
+        auto& p = decks[d];
+        p.position = apvts.getRawParameterValue (deckId (d, "position"));
+        p.size     = apvts.getRawParameterValue (deckId (d, "size"));
+        p.pitch    = apvts.getRawParameterValue (deckId (d, "pitch"));
+        p.envelope = apvts.getRawParameterValue (deckId (d, "envelope"));
+        p.mix      = apvts.getRawParameterValue (deckId (d, "mix"));
+        p.feedback = apvts.getRawParameterValue (deckId (d, "feedback"));
+        for (int i = 0; i < kNumDeckButtons; ++i)
+            p.button[i] = apvts.getRawParameterValue (deckId (d, deckButtonBase (i)));
+    }
+    pCrossfade = apvts.getRawParameterValue ("crossfade");
+    pRoute     = apvts.getRawParameterValue ("route");
+    pPanSpeed  = apvts.getRawParameterValue ("panSpeed");
+    pPanRange  = apvts.getRawParameterValue ("panRange");
+    pOutLevel  = apvts.getRawParameterValue ("outLevel");
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor::createLayout()
@@ -36,31 +43,49 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     // Defaults are the firmware's (CoreUI::_init_values in src/ui/core.ui.cpp).
-    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "position", 1 }, "Position",
-        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f, Attrs().withStringFromValueFunction (percentText)));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "size", 1 }, "Size",
-        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f, Attrs().withStringFromValueFunction (percentText)));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "pitch", 1 }, "Pitch",
+    auto pitchText = [] (float v, int)
+    {
+        const float speed = UnofficialSpotykachProcessor::pitchToSpeed (v);
+        if (speed < 0.005f) return juce::String ("stopped");
+        const float st = 12.0f * std::log2 (speed);
+        return juce::String (speed, 2) + "x  " + (st >= 0 ? "+" : "") + juce::String (st, 1) + " st";
+    };
+    auto envText = [] (float v, int) { return v < 0.02f ? juce::String ("off") : percentText (v, 0); };
+
+    for (int d = 0; d < 2; ++d)
+    {
+        const juce::String tag = d == 0 ? "A " : "B ";
+        auto id = [d] (const char* base) { return ParameterID { deckId (d, base), 1 }; };
+        auto knob = [&] (const char* base, const char* name, float def, std::function<juce::String (float, int)> text)
+        {
+            layout.add (std::make_unique<juce::AudioParameterFloat> (id (base), tag + name,
+                NormalisableRange<float> (0.0f, 1.0f, 0.001f), def, Attrs().withStringFromValueFunction (text)));
+        };
+        knob ("position", "Position", 0.0f,  percentText);
+        knob ("size",     "Size",     1.0f,  percentText);
+        knob ("pitch",    "Pitch",    0.5f,  pitchText);
+        knob ("envelope", "Envelope", 0.0f,  envText);
+        knob ("mix",      "Mix",      0.5f,  percentText);
+        knob ("feedback", "Feedback", 0.95f, percentText);
+
+        // Buttons. A press is a rising edge (0 -> 1); the editor sends 1 then 0, automation can do the same.
+        static const char* names[kNumDeckButtons] = { "Record", "Play", "Reverse", "Trig", "Record From Other Deck" };
+        for (int i = 0; i < kNumDeckButtons; ++i)
+            layout.add (std::make_unique<juce::AudioParameterBool> (id (deckButtonBase (i)), tag + names[i], false));
+    }
+
+    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "crossfade", 1 }, "A/B Crossfade",
         NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.5f,
         Attrs().withStringFromValueFunction ([] (float v, int)
         {
-            const float speed = UnofficialSpotykachProcessor::pitchToSpeed (v);
-            if (speed < 0.005f) return juce::String ("stopped");
-            const float st = 12.0f * std::log2 (speed);
-            return juce::String (speed, 2) + "x  " + (st >= 0 ? "+" : "") + juce::String (st, 1) + " st";
+            return v < 0.01f ? juce::String ("A only") : v > 0.99f ? juce::String ("B only") : percentText (v, 0) + " toward B";
         })));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "envelope", 1 }, "Envelope",
-        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f,
-        Attrs().withStringFromValueFunction ([] (float v, int) { return v < 0.02f ? juce::String ("off") : percentText (v, 0); })));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "mix", 1 }, "Mix",
-        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.5f, Attrs().withStringFromValueFunction (percentText)));
-    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "feedback", 1 }, "Feedback",
-        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.95f, Attrs().withStringFromValueFunction (percentText)));
-
-    // Buttons. A press is a rising edge (0 -> 1); the editor sends 1 then 0, automation can do the same.
-    layout.add (std::make_unique<juce::AudioParameterBool> (ParameterID { "record", 1 },  "Record",  false));
-    layout.add (std::make_unique<juce::AudioParameterBool> (ParameterID { "play", 1 },    "Play",    false));
-    layout.add (std::make_unique<juce::AudioParameterBool> (ParameterID { "reverse", 1 }, "Reverse", false));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (ParameterID { "route", 1 }, "Routing",
+        juce::StringArray { "Double Mono", "Stereo", "Generative Stereo" }, 1));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "panSpeed", 1 }, "Pan Speed",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f, Attrs().withStringFromValueFunction (percentText)));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "panRange", 1 }, "Pan Range",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.6f, Attrs().withStringFromValueFunction (percentText)));
 
     layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "outLevel", 1 }, "Output Level",
         NormalisableRange<float> (-60.0f, 6.0f, 0.1f), 0.0f, Attrs().withLabel ("dB")));
@@ -75,9 +100,9 @@ void UnofficialSpotykachProcessor::prepareToPlay (double sampleRate, int samples
     setLatencySamples (engine.latencySamples());
     outGain.reset (sampleRate, 0.02);                    // 20 ms ramp
     outGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pOutLevel->load()));
-    wasRecord = pRecord->load() > 0.5f;
-    wasPlay = pPlay->load() > 0.5f;
-    wasReverse = pReverse->load() > 0.5f;
+    for (auto& d : decks)
+        for (int i = 0; i < kNumDeckButtons; ++i)
+            d.was[i] = d.button[i]->load() > 0.5f;
 }
 
 bool UnofficialSpotykachProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -113,20 +138,31 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
         inputPeak.store (peak, std::memory_order_relaxed);
 
     // Button presses = rising edges.
-    const bool rec = pRecord->load() > 0.5f, ply = pPlay->load() > 0.5f, rev = pReverse->load() > 0.5f;
+    static constexpr usp::EngineAction kButtonAction[kNumDeckButtons] =
+        { usp::kActionRecord, usp::kActionPlay, usp::kActionReverse, usp::kActionTrig, usp::kActionRecordInternal };
     uint32_t actions = 0;
-    if (rec && ! wasRecord) actions |= usp::kActionRecord;
-    if (ply && ! wasPlay)   actions |= usp::kActionPlay;
-    if (rev && ! wasReverse) actions |= usp::kActionReverse;
-    wasRecord = rec; wasPlay = ply; wasReverse = rev;
-
     usp::EngineParams p;
-    p.position = pPosition->load();
-    p.size     = pSize->load();
-    p.pitch    = pPitch->load();
-    p.envelope = pEnvelope->load();
-    p.mix      = pMix->load();
-    p.feedback = pFeedback->load();
+    for (int d = 0; d < 2; ++d)
+    {
+        auto& dp = decks[d];
+        for (int i = 0; i < kNumDeckButtons; ++i)
+        {
+            const bool now = dp.button[i]->load() > 0.5f;
+            if (now && ! dp.was[i]) actions |= usp::deckAction (d, kButtonAction[i]);
+            dp.was[i] = now;
+        }
+        auto& t = p.deck[d];
+        t.position = dp.position->load();
+        t.size     = dp.size->load();
+        t.pitch    = dp.pitch->load();
+        t.envelope = dp.envelope->load();
+        t.mix      = dp.mix->load();
+        t.feedback = dp.feedback->load();
+    }
+    p.crossfade = pCrossfade->load();
+    p.route     = juce::jlimit (0, 2, juce::roundToInt (pRoute->load()));
+    p.panSpeed  = pPanSpeed->load();
+    p.panRange  = pPanRange->load();
 
     float* left  = buffer.getWritePointer (0);
     float* right = numChans > 1 ? buffer.getWritePointer (1) : left;

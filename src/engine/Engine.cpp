@@ -118,7 +118,7 @@ namespace usp
             core->driver().set_on_quarter ([] (const bool) {});   // the Driver calls these unconditionally
             core->driver().set_on_clock_out ([] {});
             core->set_route (Route::Stereo);    // firmware leaves this unset; Stereo chosen (decision D7)
-            core->set_mix (0.0f);                // 0 = Deck A only (Deck B is not exposed yet)
+            core->set_mix (0.5f);
             core->set_click_mix (0.0f);
             core->mix_mod_in (0.0f);
 
@@ -167,23 +167,40 @@ namespace usp
             {
                 cur = first ? tgt : cur + a * (tgt - cur);
             };
-            follow (cur.position, target.position);
-            follow (cur.size,     target.size);
-            follow (cur.envelope, target.envelope);
-            follow (cur.feedback, target.feedback);
-            // Pitch and mix are smoothed inside the core itself (speed glides over ~100 ms; Deck has a
-            // one-pole smoother on the in/out mix), so they go in directly.
-            cur.pitch = target.pitch;
-            cur.mix   = target.mix;
+            for (int d = 0; d < 2; ++d)
+            {
+                auto& t = target.deck[d];
+                auto& c = cur.deck[d];
+                auto& l = last.deck[d];
+                follow (c.position, t.position);
+                follow (c.size,     t.size);
+                follow (c.envelope, t.envelope);
+                follow (c.feedback, t.feedback);
+                // Pitch and mix are smoothed inside the core itself (speed glides over ~100 ms; Deck has a
+                // one-pole smoother on the in/out mix), so they go in directly.
+                c.pitch = t.pitch;
+                c.mix   = t.mix;
 
-            auto& deck = core->deck (Deck::A);
-            auto& g = deck.voxs();
-            if (changed (last.position, cur.position)) g.set_start (cur.position);
-            if (changed (last.size, cur.size))         g.set_size (cur.size, false);
-            if (changed (last.envelope, cur.envelope)) g.set_shape (cur.envelope);
-            if (changed (last.pitch, cur.pitch))       g.set_speed (cur.pitch);   // Reel: speed (Slice would use set_pitch)
-            if (changed (last.mix, cur.mix))           deck.set_inout_mix (cur.mix);
-            if (changed (last.feedback, cur.feedback)) deck.set_feedback (cur.feedback);
+                auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
+                auto& g = deck.voxs();
+                if (changed (l.position, c.position)) g.set_start (c.position);
+                if (changed (l.size, c.size))         g.set_size (c.size, false);
+                if (changed (l.envelope, c.envelope)) g.set_shape (c.envelope);
+                if (changed (l.pitch, c.pitch))       g.set_speed (c.pitch);   // Reel: speed (Slice would use set_pitch)
+                if (changed (l.mix, c.mix))           deck.set_inout_mix (c.mix);
+                if (changed (l.feedback, c.feedback)) deck.set_feedback (c.feedback);
+            }
+
+            // The core smooths the crossfade itself (OnePoleSmoother), so it goes in directly.
+            if (changed (last.crossfade, target.crossfade)) core->set_mix (target.crossfade);
+            if (first || target.route != last.route)
+            {
+                last.route = target.route;
+                core->set_route (target.route == kRouteDoubleMono ? Route::DoubleMono
+                               : target.route == kRouteGenerativeStereo ? Route::GenerativeStereo : Route::Stereo);
+            }
+            if (changed (last.panSpeed, target.panSpeed)) core->panner().set_speed (target.panSpeed);
+            if (changed (last.panRange, target.panRange)) core->panner().set_range (target.panRange);
             first = false;
         }
 
@@ -201,21 +218,41 @@ namespace usp
         void applyActions (const uint32_t actions)
         {
             using namespace spotykach;
-            auto& deck = core->deck (Deck::A);
-            if ((actions & kActionRecord) != 0)
+            for (int d = 0; d < 2; ++d)
             {
-                core->set_source (Deck::Source::external, Deck::A);
-                deck.toggle_recording();
+                const auto ref = d == 0 ? Deck::A : Deck::B;
+                const uint32_t bits = (actions >> (d * 8)) & 0xffu;
+                if (bits == 0) continue;
+                auto& deck = core->deck (ref);
+
+                auto record = [&] (const Deck::Source src)
+                {
+                    core->set_source (src, ref);
+                    deck.toggle_recording();
+                };
+                if ((bits & kActionRecord) != 0)         record (Deck::Source::external);
+                if ((bits & kActionRecordInternal) != 0) record (Deck::Source::internal);
+
+                auto play = [&] (const bool reverse)
+                {
+                    deck.disarm();
+                    if (! deck.is_overdubbing() && (! deck.is_playing() || deck.is_reverse() == reverse))
+                        core->driver().toggle_play (ref);
+                    deck.set_reverse (reverse);
+                };
+                if ((bits & kActionPlay) != 0)    play (false);
+                if ((bits & kActionReverse) != 0) play (true);
+
+                if ((bits & kActionTrig) != 0)
+                {
+                    // Same as CoreUI::_trigger(): a speed event with no V/Oct offset (speed 1).
+                    auto e = make_event();
+                    e.discont = false;
+                    e.p3 = 1.0f;
+                    e.p3_on = true;
+                    deck.trigger (&e);
+                }
             }
-            auto play = [&] (const bool reverse)
-            {
-                deck.disarm();
-                if (! deck.is_overdubbing() && (! deck.is_playing() || deck.is_reverse() == reverse))
-                    core->driver().toggle_play (Deck::A);
-                deck.set_reverse (reverse);
-            };
-            if ((actions & kActionPlay) != 0)    play (false);
-            if ((actions & kActionReverse) != 0) play (true);
         }
 
         // ---- Engine-rate processing, split at the 96-sample tick boundaries ---------------------------------
@@ -253,14 +290,18 @@ namespace usp
         void publish()
         {
             using namespace spotykach;
-            auto& deck = core->deck (Deck::A);
-            status.armed.store (deck.is_armed(), std::memory_order_relaxed);
-            status.recording.store (deck.is_recording(), std::memory_order_relaxed);
-            status.playing.store (deck.is_playing(), std::memory_order_relaxed);
-            status.reverse.store (deck.is_reverse(), std::memory_order_relaxed);
-            status.empty.store (deck.is_empty(), std::memory_order_relaxed);
-            status.loopSeconds.store ((float) deck.buffer().rec_size() / (float) kEngineRate, std::memory_order_relaxed);
-            status.playhead.store (deck.norm_playhead_at (0), std::memory_order_relaxed);
+            for (int d = 0; d < 2; ++d)
+            {
+                auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
+                auto& s = status.deck[d];
+                s.armed.store (deck.is_armed(), std::memory_order_relaxed);
+                s.recording.store (deck.is_recording(), std::memory_order_relaxed);
+                s.playing.store (deck.is_playing(), std::memory_order_relaxed);
+                s.reverse.store (deck.is_reverse(), std::memory_order_relaxed);
+                s.empty.store (deck.is_empty(), std::memory_order_relaxed);
+                s.loopSeconds.store ((float) deck.buffer().rec_size() / (float) kEngineRate, std::memory_order_relaxed);
+                s.playhead.store (deck.norm_playhead_at (0), std::memory_order_relaxed);
+            }
         }
 
         void prepare (const double hostRate, const int maxHostBlock)

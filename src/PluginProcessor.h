@@ -50,23 +50,35 @@ public:
     // Mapping of Reel-mode pitch (0..1) to playback speed, as in the firmware (generator.cpp mapped_speed()).
     static float pitchToSpeed (float v) { return v < 0.5f ? 2.0f * v : 1.0f + (v - 0.5f) * 6.0f; }
 
+    // Parameter id for a deck's control: Deck A keeps the original ids (so saved sessions keep working),
+    // Deck B uses a "b_" prefix.
+    static juce::String deckId (int deck, const juce::String& base) { return deck == 0 ? base : "b_" + base; }
+
+    static constexpr int kNumDeckButtons = 5;   // record, play, reverse, trig, recInternal
+    static const char* deckButtonBase (int i)
+    {
+        static const char* names[kNumDeckButtons] = { "record", "play", "reverse", "trig", "recInternal" };
+        return names[i];
+    }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
     usp::Engine engine;
 
-    std::atomic<float>* pPosition = nullptr;
-    std::atomic<float>* pSize = nullptr;
-    std::atomic<float>* pPitch = nullptr;
-    std::atomic<float>* pEnvelope = nullptr;
-    std::atomic<float>* pMix = nullptr;
-    std::atomic<float>* pFeedback = nullptr;
-    std::atomic<float>* pRecord = nullptr;
-    std::atomic<float>* pPlay = nullptr;
-    std::atomic<float>* pReverse = nullptr;
+    struct DeckPtrs
+    {
+        std::atomic<float>* position = nullptr; std::atomic<float>* size = nullptr; std::atomic<float>* pitch = nullptr;
+        std::atomic<float>* envelope = nullptr; std::atomic<float>* mix = nullptr;  std::atomic<float>* feedback = nullptr;
+        std::atomic<float>* button[kNumDeckButtons] = {};
+        bool was[kNumDeckButtons] = {};            // audio thread only
+    };
+    DeckPtrs decks[2];
+    std::atomic<float>* pCrossfade = nullptr;
+    std::atomic<float>* pRoute = nullptr;
+    std::atomic<float>* pPanSpeed = nullptr;
+    std::atomic<float>* pPanRange = nullptr;
     std::atomic<float>* pOutLevel = nullptr;
-
-    bool wasRecord = false, wasPlay = false, wasReverse = false;   // audio thread only
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outGain;
 

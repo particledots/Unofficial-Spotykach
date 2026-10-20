@@ -38,12 +38,14 @@ struct Rig
     double rate;
     int block;
     EngineParams params;
+    std::vector<float> lastOutR;                 // right output of the last run()
+    const std::vector<float>* rightIn = nullptr; // if set, used as right input (same length as the left input)
 
-    Rig (double r, int b) : rate (r), block (b) { engine.prepare (r, b); }
+    Rig (double r, int b) : rate (r), block (b) { params.crossfade = 0.0f; engine.prepare (r, b); }
 
     std::vector<float> run (const std::vector<float>& in, uint32_t actionsAtStart = 0)
     {
-        std::vector<float> out (in.size(), 0.0f), outR (in.size(), 0.0f), inR = in;
+        std::vector<float> out (in.size(), 0.0f), outR (in.size(), 0.0f), inR = rightIn != nullptr ? *rightIn : in;
         std::vector<float> inCopy = in;
         size_t off = 0;
         bool first = true;
@@ -57,6 +59,7 @@ struct Rig
             first = false;
             off += (size_t) n;
         }
+        lastOutR = outR;
         return out;
     }
 };
@@ -86,7 +89,7 @@ static double rms (const std::vector<float>& v, size_t a, size_t b)
 static void testLatency (double rate, int block)
 {
     Rig r (rate, block);
-    r.params.mix = 0.0f;   // input only
+    r.params.deck[0].mix = 0.0f;   // input only
     auto in = silence (rate, 0.5);
     const size_t at = (size_t) (rate * 0.1);
     in[at] = 0.25f;
@@ -102,7 +105,7 @@ static void testLatency (double rate, int block)
 static void testRecordPlay (double rate, int block)
 {
     Rig r (rate, block);
-    r.params.mix = 1.0f;       // loop only, so we hear nothing unless the loop plays
+    r.params.deck[0].mix = 1.0f;       // loop only, so we hear nothing unless the loop plays
     const double recSeconds = 1.0;
 
     // 0.3 s of silence, arm record, 1.0 s of tone, press Play (ends recording), 3 s of silence
@@ -114,20 +117,109 @@ static void testRecordPlay (double rate, int block)
     auto tail = r.run (silence (rate, 3.0));
 
     const auto& s = r.engine.status();
-    std::printf ("  loop: %.3f s, playing=%d, empty=%d, underruns=%u\n", s.loopSeconds.load(), (int) s.playing.load(), (int) s.empty.load(), (unsigned) s.underruns.load());
+    std::printf ("  loop: %.3f s, playing=%d, empty=%d, underruns=%u\n", s.deck[0].loopSeconds.load(), (int) s.deck[0].playing.load(), (int) s.deck[0].empty.load(), (unsigned) s.underruns.load());
     CHECK (finiteAndBounded (tail), "output has NaN/inf or is out of range");
-    CHECK (! s.empty.load(), "nothing was recorded");
-    CHECK (s.playing.load(), "deck is not playing");
-    CHECK (std::abs (s.loopSeconds.load() - recSeconds) < 0.15, "loop length %.3f s is not near %.2f s", s.loopSeconds.load(), recSeconds);
+    CHECK (! s.deck[0].empty.load(), "nothing was recorded");
+    CHECK (s.deck[0].playing.load(), "deck is not playing");
+    CHECK (std::abs (s.deck[0].loopSeconds.load() - recSeconds) < 0.15, "loop length %.3f s is not near %.2f s", s.deck[0].loopSeconds.load(), recSeconds);
     CHECK (s.underruns.load() == 0, "resampler under-ran %u frames", (unsigned) s.underruns.load());
     const double level = rms (tail, (size_t) (rate * 0.5), tail.size());
     CHECK (level > 0.05, "playback is too quiet (rms %.4f)", level);
 }
 
+
+// Both decks, crossfade, routing, internal recording, trig.
+static void testDecks (double rate, int block)
+{
+    const auto tone = sine (rate, 1.0, 330.0, 0.5f);
+    const auto none = silence (rate, 1.0);
+    const uint32_t recA = deckAction (0, kActionRecord), recB = deckAction (1, kActionRecord);
+    const uint32_t playA = deckAction (0, kActionPlay), playB = deckAction (1, kActionPlay);
+    auto level = [&] (const std::vector<float>& v) { return rms (v, v.size() / 4, v.size()); };
+
+    {   // Deck B on its own: audible with the crossfade at B, silent with it at A.
+        Rig r (rate, block);
+        r.params.deck[0].mix = 1.0f; r.params.deck[1].mix = 1.0f;
+        r.run (silence (rate, 0.2));
+        r.run (silence (rate, 0.05), recB);
+        r.run (tone);
+        r.run (silence (rate, 0.05), recB);
+        r.run (silence (rate, 0.05), playB);
+        r.params.crossfade = 1.0f;
+        r.run (silence (rate, 0.3));
+        const double atB = level (r.run (silence (rate, 1.5)));
+        r.params.crossfade = 0.0f;
+        r.run (silence (rate, 0.3));
+        const double atA = level (r.run (silence (rate, 1.0)));
+        const auto& s = r.engine.status();
+        std::printf ("  deck B: crossfade@B rms %.4f, crossfade@A rms %.5f, loop %.2f s, A empty=%d\n", atB, atA,
+                    s.deck[1].loopSeconds.load(), (int) s.deck[0].empty.load());
+        CHECK (atB > 0.05, "deck B loop not audible with crossfade at B (rms %.4f)", atB);
+        CHECK (atA < 1e-3, "deck B leaks with crossfade at A (rms %.5f)", atA);
+        CHECK (std::abs (s.deck[1].loopSeconds.load() - 1.0f) < 0.15f, "deck B loop length %.3f", s.deck[1].loopSeconds.load());
+        CHECK (s.deck[0].empty.load(), "deck A should still be empty");
+        CHECK (s.underruns.load() == 0, "underruns %u", (unsigned) s.underruns.load());
+    }
+    {   // Double Mono: left input -> deck A (left output), right input -> deck B (right output).
+        Rig r (rate, block);
+        r.params.route = kRouteDoubleMono;
+        r.params.crossfade = 0.5f;
+        r.params.deck[0].mix = 1.0f; r.params.deck[1].mix = 1.0f;
+        r.run (silence (rate, 0.2));
+        r.rightIn = &none;
+        r.run (silence (rate, 0.05), recA | recB);
+        r.run (tone);                                  // left carries the tone, right is silent
+        r.run (silence (rate, 0.05), recA | recB);
+        r.run (silence (rate, 0.05), playA | playB);
+        r.rightIn = nullptr;
+        r.run (silence (rate, 0.3));
+        auto l = r.run (silence (rate, 1.5));
+        const double lL = level (l), lR = level (r.lastOutR);
+        std::printf ("  double mono: left (deck A) rms %.4f, right (deck B) rms %.5f\n", lL, lR);
+        CHECK (lL > 0.03, "double mono: deck A not heard on the left (rms %.4f)", lL);
+        CHECK (lR < 1e-3, "double mono: deck B (silent input) leaked to the right (rms %.5f)", lR);
+    }
+    {   // Record deck B from deck A's output (internal source), then play B alone.
+        Rig r (rate, block);
+        r.params.deck[0].mix = 1.0f; r.params.deck[1].mix = 1.0f;
+        r.run (silence (rate, 0.2));
+        r.run (silence (rate, 0.05), recA);
+        r.run (tone);
+        r.run (silence (rate, 0.05), recA);
+        r.run (silence (rate, 0.05), playA);
+        r.run (silence (rate, 0.3));
+        r.run (silence (rate, 0.05), deckAction (1, kActionRecordInternal));
+        r.run (silence (rate, 2.2));                     // more than one loop of A goes into B
+        r.run (silence (rate, 0.05), deckAction (1, kActionRecordInternal));
+        r.run (silence (rate, 0.05), playA | playB);     // stop A, start B
+        r.params.crossfade = 1.0f;
+        r.run (silence (rate, 0.3));
+        const double b = level (r.run (silence (rate, 1.0)));
+        std::printf ("  internal record: deck B rms %.4f, B loop %.2f s, A playing=%d\n", b,
+                    r.engine.status().deck[1].loopSeconds.load(), (int) r.engine.status().deck[0].playing.load());
+        CHECK (b > 0.03, "deck B recorded from deck A is not audible (rms %.4f)", b);
+    }
+    {   // Trig and Generative Stereo must stay finite and keep playing.
+        Rig r (rate, block);
+        r.params.deck[0].mix = 1.0f;
+        r.params.route = kRouteGenerativeStereo;
+        r.run (silence (rate, 0.2));
+        r.run (silence (rate, 0.05), recA);
+        r.run (tone);
+        r.run (silence (rate, 0.05), recA);
+        r.run (silence (rate, 0.05), playA);
+        auto o = r.run (silence (rate, 0.5), deckAction (0, kActionTrig));
+        CHECK (finiteAndBounded (o) && finiteAndBounded (r.lastOutR), "trig/generative output not finite");
+        o = r.run (silence (rate, 0.5));
+        CHECK (r.engine.status().deck[0].playing.load(), "deck A stopped after trig");
+        CHECK (finiteAndBounded (o), "output not finite after trig");
+    }
+}
+
 static void testInstancesAreIndependent()
 {
     Rig a (44100.0, 512), b (96000.0, 137);
-    a.params.mix = 1.0f; b.params.mix = 1.0f;
+    a.params.deck[0].mix = 1.0f; b.params.deck[0].mix = 1.0f;
     a.run (silence (44100.0, 0.2)); b.run (silence (96000.0, 0.2));
     a.run (silence (44100.0, 0.05), kActionRecord);
     // interleave blocks of work so any shared state would show up
@@ -155,6 +247,7 @@ int main (int argc, char** argv)
             std::printf ("rate %.0f Hz, block %d\n", rate, block);
             testLatency (rate, block);
             testRecordPlay (rate, block);
+            if (block == 64 || block == 512) testDecks (rate, block);
         }
 
     std::printf ("two independent instances\n");

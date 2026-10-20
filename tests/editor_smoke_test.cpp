@@ -4,6 +4,7 @@
 #include "../src/PluginProcessor.h"
 #include "../src/PluginEditor.h"
 #include <cstdio>
+#include <cstdlib>
 
 static int fails = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL: %s (line %d)\n", #c, __LINE__); ++fails; } } while (0)
@@ -56,13 +57,29 @@ int main()
         press ("record");  run (1); release ("record"); run (1);   // stop recording
         press ("play");    run (1); release ("play");
         run ((int) (rate * 0.5 / 512));
-        ed->setSize (ed->getWidth(), ed->getHeight());
+        // Deck B buttons and every resize step the host window could produce.
+        press ("b_record"); run (1); release ("b_record"); run (1);
+        press ("b_trig"); run (1); release ("b_trig"); run (1);
+        press ("b_recInternal"); run (1); release ("b_recInternal"); run (1);
+        for (int w : { 480, 640, 900, 1280 })
+        {
+            ed->setSize (w, (int) std::lround (w * 620.0 / 640.0));
+            auto snap = ed->createComponentSnapshot (ed->getLocalBounds());
+            CHECK (snap.isValid());
+            if (const char* dir = std::getenv ("US_SNAPSHOT_DIR"))   // optional: save pictures for inspection
+            {
+                juce::File f = juce::File (dir).getChildFile ("editor_" + juce::String (w) + ".png");
+                juce::FileOutputStream os (f);
+                if (os.openedOk()) { os.setPosition (0); os.truncate(); juce::PNGImageFormat().writeImageToStream (snap, os); }
+            }
+            CHECK ((int) proc.apvts.state.getProperty ("uiWidth", 0) == w);   // size is remembered
+        }
         auto img2 = ed->createComponentSnapshot (ed->getLocalBounds());
         CHECK (img2.isValid());
         std::printf("rate %.0f: loop %.2f s, playing=%d, empty=%d, underruns=%u\n", rate,
-                    proc.engineStatus().loopSeconds.load(), (int) proc.engineStatus().playing.load(),
-                    (int) proc.engineStatus().empty.load(), (unsigned) proc.engineStatus().underruns.load());
-        CHECK (! proc.engineStatus().empty.load());
+                    proc.engineStatus().deck[0].loopSeconds.load(), (int) proc.engineStatus().deck[0].playing.load(),
+                    (int) proc.engineStatus().deck[0].empty.load(), (unsigned) proc.engineStatus().underruns.load());
+        CHECK (! proc.engineStatus().deck[0].empty.load());
         ed.reset();
     }
     std::printf(fails ? "EDITOR SMOKE TEST FAILED\n" : "EDITOR SMOKE TEST PASSED\n");

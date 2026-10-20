@@ -17,25 +17,39 @@
 
 namespace usp
 {
-    struct EngineParams
+    struct DeckParams
     {
         float position = 0.0f;   // 0..1
         float size     = 1.0f;   // 0..1
         float pitch    = 0.5f;   // 0..1, 0.5 = normal speed
         float envelope = 0.0f;   // 0..1, 0 = off
-        float mix      = 0.5f;   // 0 = input only, 1 = loop only
+        float mix      = 0.5f;   // deck in/out mix: 0 = input only, 1 = loop only
         float feedback = 0.95f;  // 0..1 (overdub level)
     };
 
-    // Rising-edge button presses, as bit flags.
-    enum EngineAction : uint32_t
+    enum EngineRoute : int { kRouteDoubleMono = 0, kRouteStereo = 1, kRouteGenerativeStereo = 2 };
+
+    struct EngineParams
     {
-        kActionRecord  = 1u << 0,   // arm / stop recording (from the plug-in input)
-        kActionPlay    = 1u << 1,   // play forward / stop
-        kActionReverse = 1u << 2    // play reverse / stop
+        DeckParams deck[2];          // 0 = Deck A, 1 = Deck B
+        float crossfade = 0.5f;      // 0 = Deck A only, 1 = Deck B only (square-law crossfade)
+        int   route     = kRouteStereo;
+        float panSpeed  = 1.0f;      // Generative Stereo only
+        float panRange  = 0.6f;      // Generative Stereo only
     };
 
-    struct EngineStatus
+    // Rising-edge button presses, as bit flags. Deck A uses bits 0-7, Deck B bits 8-15.
+    enum EngineAction : uint32_t
+    {
+        kActionRecord         = 1u << 0,   // arm / stop recording from the plug-in input
+        kActionPlay           = 1u << 1,   // play forward / stop
+        kActionReverse        = 1u << 2,   // play reverse / stop
+        kActionTrig           = 1u << 3,   // trigger (restarts playback; the firmware's gate input)
+        kActionRecordInternal = 1u << 4    // arm / stop recording from the OTHER deck's output
+    };
+    constexpr uint32_t deckAction (int deck, EngineAction a) { return (uint32_t) a << (deck * 8); }
+
+    struct DeckStatus
     {
         std::atomic<bool>     armed { false };
         std::atomic<bool>     recording { false };
@@ -44,6 +58,11 @@ namespace usp
         std::atomic<bool>     empty { true };
         std::atomic<float>    loopSeconds { 0.0f };
         std::atomic<float>    playhead { 0.0f };       // 0..1 through the loop
+    };
+
+    struct EngineStatus
+    {
+        DeckStatus deck[2];
         std::atomic<uint32_t> underruns { 0 };         // output frames the resampler could not supply
     };
 

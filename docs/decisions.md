@@ -1,7 +1,7 @@
 # decisions.md: Spotykach (unofficial)
 
 Running file. Updated at the end of each milestone.
-Last updated: 2026-10-20, end of Milestone 2 build (awaiting your test report).
+Last updated: 2026-10-20, M3 built (awaiting your test report).
 Full reasoning and evidence tags are in SPEC.md; section numbers below refer to it.
 
 ---
@@ -35,6 +35,11 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | D20 | M2 resampler: own 32-tap windowed-sinc, 512 phases, linear phase interpolation. Reported plug-in latency is 0 at 48 kHz and about 29-117 host samples at other rates (measured equal to reported within 1 sample). Not tuned for audio quality; **sound quality unknown until you listen**. | Mine | |
 | D21 | M2 buttons REC / PLAY / REV are automatable bool parameters acting on the 0 to 1 edge; the window sends 1 then 0 after 80 ms. | Mine | Lets automation or MIDI-learn trigger them later. |
 | D22 | M2 pitch parameter shows speed and semitones using the firmware mapping (0.5 = 1x, 1.0 = 4x, 0 = stopped), read from `generator.cpp`. Below 0.5 it is linear speed, so the semitone display is not linear in the knob. | Mine | |
+| D24 | Resizable window requested by you for M3: default size unchanged (640x470 for the current one-deck layout), aspect ratio locked, size saved in plug-in state. Min/max range is my proposal (about 50% to 200%); your reply was "default as is, no change". | Yours (request) / mine (range) | Headless test only; look and feel must be checked by you in Logic. |
+| D25 | M3 scope (from your list): both decks, routing, A/B crossfade, trig, envelope, plus resizable window. Also added "record from the other deck" (the firmware's internal source) because the core needs it for Deck B to be useful as a resampler, and Pan Speed / Pan Range because Generative Stereo uses them. Slice, Drift, FX, modulators, clock, MIDI are still later milestones. | Mine | Firmware: `core.ui.cpp` `_toggle_record`, `_trigger`, `_process_switches` (route), `CTRL_CROSSFADE`. |
+| D26 | Parameter ids: Deck A keeps its M2 ids (so M2 sessions load); Deck B uses a `b_` prefix. New: crossfade (default 0.5), route (Double Mono / Stereo / Generative Stereo, default Stereo), panSpeed (1.0), panRange (0.6; defaults from `_init_values`), trig and recInternal buttons per deck. **Behaviour change vs M2:** crossfade default 0.5 (M2 was effectively Deck A only), so Deck A is now at about 0.75 gain with the crossfade centred. I did not verify the hardware knob's resting position. | Mine | Square-law crossfade in `xfade.h`. |
+| D27 | Double Mono: left input goes to Deck A and right input to Deck B, outputs left = A, right = B. Stereo and Generative Stereo feed both decks the same stereo input. | Mine | Read from `core.cpp` `Core::process`. |
+| D28 | Window: base 640x620, aspect ratio locked, resizable from 75% to 200% (I chose 75% as the minimum because labels become unreadable below it; you said keep the default as is). Width is stored in the plug-in state and restored. Rendered headlessly on Linux only; I have not seen it on macOS. | Mine / yours | |
 | D23 | CI now runs a blocking headless `engine_test` and a blocking editor smoke test (opens the real editor, renders it, presses the buttons, runs audio at 44.1/48/96 kHz). The smoke test passed on the macOS runner (this resolves the M1 "unverified that it works on a headless runner" proposal). It does not prove the window looks right or that Logic accepts it. | Mine | |
 
 ---
@@ -61,7 +66,8 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | M0 | **Done, accepted (no vetoes)** | SPEC.md and this file written. Licence verified. Core compiles on desktop with fixes. Parameter list drafted. Panel mockup published (render not checked by me). |
 | M1 | **Fixed build 0f92d6e (run 39484308800, CI green incl. arch+minimum-OS check). Awaiting your Logic test on both Macs.** Build 8b83286 CRASHED Logic 10.7.8 on the Intel Mac (macOS 12.7.6) when the plug-in window opened: my bug (setSize() in the editor constructor ran resized() before the About panel was created; null dereference). `auval` passed on the Intel Mac for 8b83286 but does not open the window, so it cannot catch this. Superseded builds (do not test): 0904db3, 48e54e3, e6eceaa, 1c047cc, 8b83286. M4 (macOS 26.5, Logic 11.2.2) was not tested on 8b83286 since it would crash the same way. |
 | M1 result | **Accepted.** Build 0f92d6e passed all 6 checks on both Macs. | |
-| M2 | **Built, CI green (commit 5c2948c, run 39488932105): engine_test, arch+minimum-OS check, editor smoke test, auval all passed on the runner. Not yet tested by you in Logic.** Scope: Deck A, Reel mode only (record, play, reverse, position, size, pitch, envelope, mix, feedback, output level). Tested only headlessly: Reel/Deck A with Stereo route; Slice, Drift, Deck B, FX, modulators, external clock are untested. Sound quality unverified. | |
+| M2 | **Accepted 2026-10-20: all 7 checks WORKED on both Macs (build 9a1881e, run 39489948406).** CI: engine_test, arch+minimum-OS check, editor smoke test, auval all passed. Scope: Deck A, Reel mode only (record, play, reverse, position, size, pitch, envelope, mix, feedback, output level). Tested only headlessly: Reel/Deck A with Stereo route; Slice, Drift, Deck B, FX, modulators, external clock are untested. Sound quality unverified. | |
+| M3 | **Built; awaiting your Logic test.** Engine tests pass for both decks, crossfade, Double Mono, record-from-other-deck and trig. Not verified: how Generative Stereo sounds (smoke tested for finite output only), whether Trig sounds right on a playing loop, macOS appearance. |
 
 ---
 
