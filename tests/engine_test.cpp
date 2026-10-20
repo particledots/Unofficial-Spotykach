@@ -1,5 +1,6 @@
 // Unofficial Spotykach - own code, GNU AGPLv3 (see LICENSE).
 // Headless test of the engine wrapper (no JUCE, no audio device). Run by CI; a failure fails the build.
+#include "../src/engine/PitchMap.h"
 #include "Engine.h"
 
 #include <atomic>
@@ -323,8 +324,24 @@ static void testInstancesAreIndependent()
     CHECK (lb < 1e-4, "instance B should be silent (rms %.6f): state is shared between instances", lb);
 }
 
+static void testPitchMap()
+{
+    for (int snap = 1; snap <= 2; ++snap)
+        for (int i = 0; i <= 1000; ++i)
+        {
+            const float v = (float) i / 1000.0f;
+            const float k = usp::snapKnob (v, snap);
+            CHECK (std::abs (usp::snapPitch (k, snap) - usp::snapPitch (v, snap)) < 1.0e-5f, "snap %d: knob %.3f -> %.3f changes the pitch", snap, v, k);
+            CHECK (k >= -1e-6f && k <= 1.000001f, "snap %d: knob %.3f out of range", snap, k);
+        }
+    // +12 semitones and -7 semitones in Semitones mode are exact
+    CHECK (std::abs (usp::normToSpeed (usp::snapPitch (0.75f, 2)) - 2.0f) < 1e-4f, "+12 st is not 2x");
+    CHECK (std::abs (usp::normToSpeed (usp::snapPitch (0.5f - 7.0f / 48.0f, 2)) - std::pow (2.0f, -7.0f / 12.0f)) < 1e-4f, "-7 st wrong");
+}
+
 int main (int argc, char** argv)
 {
+    testPitchMap();
     const double rates[] = { 22050.0, 44100.0, 48000.0, 88200.0, 96000.0, 192000.0 };
     const int blocks[]   = { 1, 64, 137, 512, 4096 };
 

@@ -29,4 +29,14 @@ namespace usp
         }
         return v;
     }
+
+    // Where the KNOB sits (0..1) after snapping: one of 7 zones for the firmware steps, or a whole
+    // semitone for mode 2. snapPitch (snapKnob (v)) == snapPitch (v), so the knob can be moved to this
+    // position without changing what is heard.
+    inline float snapKnob (const float v, const int snap)
+    {
+        if (snap == 1) return std::round (std::min (1.0f, std::max (0.0f, v)) * 6.0f) / 6.0f;
+        if (snap == 2) return 0.5f + std::round ((std::min (1.0f, std::max (0.0f, v)) - 0.5f) * 48.0f) / 48.0f;
+        return v;
+    }
 }

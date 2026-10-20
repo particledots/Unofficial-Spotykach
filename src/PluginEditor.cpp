@@ -169,6 +169,17 @@ void UnofficialSpotykachEditor::setupDeck (int d)
     addLabelled (ui.envLength, P::deckId (d, "envLength"),   "Env Length",   juce::Slider::LinearHorizontal);
     addLabelled (ui.window,    P::deckId (d, "window"),      "Window",       juce::Slider::LinearHorizontal);
 
+    // With Pitch Snap on, the knob itself jumps to the snapped position while you drag it.
+    ui.knobs[2].slider.onValueChange = [this, d]
+    {
+        const int snap = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId (d, "pitchSnap"))->load());
+        if (snap == 0) return;
+        auto& sl = deckUI[(size_t) d].knobs[2].slider;
+        const float v = (float) sl.getValue(), target = usp::snapKnob (v, snap);
+        if (std::abs (target - v) > 1.0e-4f)
+            sl.setValue (target, juce::sendNotificationSync);
+    };
+
     // The pitch knob shows what the engine will actually play, including pitch snap.
     ui.knobs[2].slider.textFromValueFunction = [this, d] (double v)
     {
@@ -430,7 +441,17 @@ void UnofficialSpotykachEditor::timerCallback()
         using P = UnofficialSpotykachProcessor;
         const int mode = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId ((int) d, "mode"))->load());
         const int snap = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId ((int) d, "pitchSnap"))->load());
-        if (snap != ui.lastSnap) { ui.lastSnap = snap; ui.knobs[2].slider.updateText(); }
+        if (snap != ui.lastSnap)
+        {
+            // Keep what you hear unchanged when the snap mode changes: turning snap off leaves the knob at
+            // the pitch that was playing; turning it on moves the knob to the nearest snapped position.
+            auto& sl = ui.knobs[2].slider;
+            const float v = (float) sl.getValue();
+            if (ui.lastSnap > 0 && snap == 0)       sl.setValue (usp::snapPitch (v, ui.lastSnap), juce::sendNotificationSync);
+            else if (ui.lastSnap >= 0 && snap != 0) sl.setValue (usp::snapKnob (v, snap), juce::sendNotificationSync);
+            ui.lastSnap = snap;
+            sl.updateText();
+        }
         ui.offset.slider.setEnabled (mode == 1);                    // Slice only
         ui.envLength.slider.setEnabled (mode == 2);                 // Drift only
         ui.window.slider.setEnabled (mode == 2);

@@ -1,7 +1,7 @@
 # decisions.md: Spotykach (unofficial)
 
 Running file. Updated at the end of each milestone.
-Last updated: 2026-10-20, M3 accepted; M4 built (awaiting your test report).
+Last updated: 2026-10-20, M4 v0.3.1 (pitch-snap knob fix) built, awaiting retest.
 Full reasoning and evidence tags are in SPEC.md; section numbers below refer to it.
 
 ---
@@ -72,7 +72,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | M1 result | **Accepted.** Build 0f92d6e passed all 6 checks on both Macs. | |
 | M2 | **Accepted 2026-10-20: all 7 checks WORKED on both Macs (build 9a1881e, run 39489948406).** CI: engine_test, arch+minimum-OS check, editor smoke test, auval all passed. Scope: Deck A, Reel mode only (record, play, reverse, position, size, pitch, envelope, mix, feedback, output level). Tested only headlessly: Reel/Deck A with Stereo route; Slice, Drift, Deck B, FX, modulators, external clock are untested. Sound quality unverified. | |
 | M3 | **ACCEPTED 2026-10-20 (v0.2.1, build 39a0088): window size and project recall retested OK on both Macs; Double Mono confirmed.** Earlier detail: your test (build 9a0b1e8, both Macs): items 1, 3-8 worked ("sounding brilliant"; item 7 "i think so", not confirmed with distinct L/R sources). Item 2/9 FAILED: window size was not remembered. Cause (reproduced headlessly): `setResizeLimits()` in the editor constructor triggers `resized()` at size 0, which overwrote the stored width before it was read. Fixed in v0.2.1 (read first, store only after construction) and the smoke test now closes and reopens the editor and checks the size. Loops are not saved with the project: expected, planned for M8 (D-loop persistence).** Earlier status: built, awaiting test. Engine tests pass for both decks, crossfade, Double Mono, record-from-other-deck and trig. Not verified: how Generative Stereo sounds (smoke tested for finite output only), whether Trig sounds right on a playing loop, macOS appearance. |
-| M4 | **Built; awaiting your Logic test.** Headless: Slice and Drift record and play audibly, pitch snap gives exact octave and fifth, host sync locks and follows tempo, no allocations, clean under ASan/UBSan. Not verified: how Slice and Drift sound compared with the hardware, host-lock accuracy, macOS appearance. |
+| M4 | **Your test (v0.3.0, build 0a8f359, both Macs): 1, 2 ("perfect and extremely helpful"), 7-10 worked. Item 3 not answered. Item 4 FAILED: turning snap off left the knob near, not at, the snapped pitch (e.g. -7 st), because the knob kept its own position. Item 5: question unclear to you (explained). Item 6: Drift only sounds grainy at low Size, not very grain-like (explained; firmware logic, not compared with hardware). Fix for item 4 in v0.3.1: with snap on the knob itself jumps to the snapped position; turning snap off leaves the knob at the pitch that was playing. UI logic untested headlessly (timer-driven); engine mapping unit-tested.** Earlier status: built, awaiting your Logic test. Headless: Slice and Drift record and play audibly, pitch snap gives exact octave and fifth, host sync locks and follows tempo, no allocations, clean under ASan/UBSan. Not verified: how Slice and Drift sound compared with the hardware, host-lock accuracy, macOS appearance. |
 
 ---
 
