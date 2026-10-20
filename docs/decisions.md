@@ -53,7 +53,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 | **Done, accepted (no vetoes)** | SPEC.md and this file written. Licence verified. Core compiles on desktop with fixes. Parameter list drafted. Panel mockup published (render not checked by me). |
-| M1 | **Built, awaiting your Logic test on both Macs.** AU+VST3, universal, macOS 12.0 target, pass-through, About with version and build id, one smoothed parameter. I cannot read CI logs or download the artifact from my sandbox, so I rely on CI step results, which now include a check that fails the build if architectures or minimum macOS are wrong. `AUVAL-RESULT.txt` in the zip records the auval result: please open it. Superseded builds (do not test): 0904db3, 48e54e3, e6eceaa. |
+| M1 | **Built (commit 1c047cc, run 39433365919, all CI steps green incl. arch+minimum-OS check). Awaiting your Logic test on both Macs: M4 = macOS 26.5 Tahoe + Logic 11.2.2; Intel = macOS 12.7.8 Monterey + Logic 10.7.8 (both stated by you 2026-10-20).** AU+VST3, universal, macOS 12.0 target, pass-through, About with version and build id, one smoothed parameter. I cannot read CI logs or download the artifact from my sandbox, so I rely on CI step results, which now include a check that fails the build if architectures or minimum macOS are wrong. `AUVAL-RESULT.txt` in the zip records the auval result: please open it. Superseded builds (do not test): 0904db3, 48e54e3, e6eceaa. |
 
 ---
 
