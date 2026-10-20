@@ -1,9 +1,10 @@
-// Unofficial Spotykach - Milestone 1 shell.
+// Unofficial Spotykach - own code, GNU AGPLv3 (see LICENSE).
 // Not an official Synthux Academy product; not affiliated with Synthux Academy.
-// Licensed under the GNU AGPLv3 (see LICENSE). Third-party notices: THIRD-PARTY-LICENSES.txt
+// Third-party notices: THIRD-PARTY-LICENSES.txt
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
+#include "engine/Engine.h"
 
 class UnofficialSpotykachProcessor : public juce::AudioProcessor
 {
@@ -34,8 +35,10 @@ public:
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
+    const usp::EngineStatus& engineStatus() const { return engine.status(); }
+
     // Read by the editor on the message thread. Written only by the audio thread.
-    std::atomic<float>    inputPeak       { 0.0f };   // peak of the input since the editor last reset it
+    std::atomic<float>    inputPeak       { 0.0f };
     std::atomic<uint32_t> midiNoteOnCount { 0 };
     std::atomic<uint32_t> midiEventCount  { 0 };
     std::atomic<int>      lastNote        { -1 };
@@ -44,10 +47,27 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // Mapping of Reel-mode pitch (0..1) to playback speed, as in the firmware (generator.cpp mapped_speed()).
+    static float pitchToSpeed (float v) { return v < 0.5f ? 2.0f * v : 1.0f + (v - 0.5f) * 6.0f; }
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
-    std::atomic<float>* outLevelDb = nullptr;
+    usp::Engine engine;
+
+    std::atomic<float>* pPosition = nullptr;
+    std::atomic<float>* pSize = nullptr;
+    std::atomic<float>* pPitch = nullptr;
+    std::atomic<float>* pEnvelope = nullptr;
+    std::atomic<float>* pMix = nullptr;
+    std::atomic<float>* pFeedback = nullptr;
+    std::atomic<float>* pRecord = nullptr;
+    std::atomic<float>* pPlay = nullptr;
+    std::atomic<float>* pReverse = nullptr;
+    std::atomic<float>* pOutLevel = nullptr;
+
+    bool wasRecord = false, wasPlay = false, wasReverse = false;   // audio thread only
+
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outGain;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UnofficialSpotykachProcessor)

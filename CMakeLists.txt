@@ -27,6 +27,41 @@ if(GIT_FOUND)
 endif()
 
 include(FetchContent)
+
+# ---- Spotykach core + engine wrapper (no JUCE needed; also built by the headless tests) ----
+FetchContent_Declare(DaisySP
+  GIT_REPOSITORY https://github.com/electro-smith/DaisySP.git
+  GIT_TAG 599511b740f8f3a9b8db72a0642aa45b8a23c3a3
+  GIT_SUBMODULES "")   # never fetch the LGPL submodule
+FetchContent_MakeAvailable(DaisySP)
+target_compile_options(DaisySP PRIVATE -w)
+
+file(GLOB SPK_CORE_SRC CONFIGURE_DEPENDS
+  third_party/spotykach/src/core/*.cpp
+  third_party/spotykach/src/core/fx/*.cpp)
+add_library(spotykach_core STATIC ${SPK_CORE_SRC} src/engine/Engine.cpp)
+target_include_directories(spotykach_core PUBLIC
+  src/engine
+  src/engine/shim
+  third_party/spotykach/src
+  third_party/spotykach/src/core)
+# The upstream code relies on headers being pulled in transitively by libDaisy; force them.
+target_compile_options(spotykach_core PRIVATE
+  "SHELL:-include cstdint" "SHELL:-include cstddef" "SHELL:-include cmath"
+  "SHELL:-include cstring" "SHELL:-include algorithm" -w)
+target_link_libraries(spotykach_core PUBLIC DaisySP)
+set_target_properties(spotykach_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Headless engine test (not part of the default build).
+add_executable(engine_test EXCLUDE_FROM_ALL tests/engine_test.cpp)
+target_compile_definitions(engine_test PRIVATE COUNT_ALLOCS)
+target_link_libraries(engine_test PRIVATE spotykach_core)
+
+if(US_ENGINE_ONLY)
+  return()
+endif()
+
+# ---- JUCE plug-in ----
 FetchContent_Declare(JUCE
   GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
   GIT_TAG 8.0.16-security
@@ -59,6 +94,24 @@ target_compile_definitions(UnofficialSpotykach PRIVATE
   US_BUILD_ID="${US_BUILD_ID}")
 
 target_link_libraries(UnofficialSpotykach PRIVATE
+  spotykach_core
   juce::juce_audio_utils
   juce::juce_recommended_config_flags
   juce::juce_recommended_warning_flags)
+
+# Opens the real editor and runs audio through the real processor (auval does not open the window).
+juce_add_console_app(EditorSmokeTest PRODUCT_NAME "EditorSmokeTest")
+set_target_properties(EditorSmokeTest PROPERTIES EXCLUDE_FROM_ALL TRUE)
+target_sources(EditorSmokeTest PRIVATE
+  tests/editor_smoke_test.cpp
+  src/PluginProcessor.cpp
+  src/PluginEditor.cpp)
+target_compile_definitions(EditorSmokeTest PRIVATE
+  JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0
+  JUCE_STANDALONE_APPLICATION=1
+  JucePlugin_Name="Unofficial Spotykach"
+  JucePlugin_VersionString="${PROJECT_VERSION}"
+  US_BUILD_ID="${US_BUILD_ID}")
+target_link_libraries(EditorSmokeTest PRIVATE
+  spotykach_core juce::juce_audio_utils juce::juce_gui_basics
+  juce::juce_recommended_config_flags)

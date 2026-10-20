@@ -15,6 +15,11 @@ jobs:
       - name: Configure (universal, macOS 12)
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
 
+      - name: Engine tests (all sample rates and block sizes, zero allocations on the audio path)
+        run: |
+          cmake --build build --target engine_test -j4
+          ./build/engine_test
+
       - name: Build AU + VST3
         run: cmake --build build --target UnofficialSpotykach_AU UnofficialSpotykach_VST3 -j4
 
@@ -61,6 +66,12 @@ jobs:
              Copy the .vst3      to ~/Library/Audio/Plug-Ins/VST3/
           4. Logic Pro > Settings > Plug-in Manager > select it > Reset & Rescan Selection.
           TXT
+
+      # Opens the real editor and runs audio through the real processor. auval does not open the window.
+      - name: Editor smoke test (opens the plug-in window, presses buttons, runs audio)
+        run: |
+          cmake --build build --target EditorSmokeTest -j4
+          ./build/EditorSmokeTest_artefacts/Release/EditorSmokeTest
 
       # auval is Apple's Audio Unit validator. Whether it works on a CI runner is not
       # guaranteed, so this step records the result instead of failing the build.

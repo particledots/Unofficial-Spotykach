@@ -7,10 +7,15 @@ Academy product and is not affiliated with Synthux Academy.
 This plug-in as a whole is licensed under the GNU Affero General Public
 License version 3 (see the LICENSE file).
 
-Milestone 1 note: this build does not yet contain any code from the Spotykach
-firmware. The sections below list what the finished plug-in will contain, so
-the notices are in place from the start. They will be updated, with the exact
-file list, in the milestone that adds that code.
+What is in the build (Milestone 2):
+  - Spotykach firmware core (MIT), vendored unchanged except for the listed
+    modifications, in third_party/spotykach/ (see third_party/spotykach/NOTICE.md
+    for the exact commit, the omitted files and every modification).
+  - DaisySP (MIT), fetched at build time at a pinned commit (599511b) and
+    linked as a library. Its optional LGPL part is NOT used.
+  - JUCE (AGPLv3 option).
+  Own code (AGPLv3): everything under src/ and tests/, including the
+  stand-ins for the Daisy hardware libraries in src/engine/shim/.
 
 
 1. Spotykach firmware (Synthux Academy) - MIT licence

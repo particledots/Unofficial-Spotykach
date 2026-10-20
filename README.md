@@ -21,8 +21,8 @@ Built with [JUCE](https://juce.com).
 
 ## Status
 
-Milestone 1: an installable shell. It loads in Logic, shows the version on its About screen and
-passes audio through. **There is no looper yet.**
+Milestone 2: Deck A of the Spotykach looper in Reel mode (record, play, reverse, position, size,
+pitch, envelope, mix, feedback). Deck B, Slice mode, effects and MIDI control are not in yet.
 
 ## Licence
 
