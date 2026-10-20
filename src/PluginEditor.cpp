@@ -2,6 +2,7 @@
 // Not an official Synthux Academy product; not affiliated with Synthux Academy.
 // Third-party notices: THIRD-PARTY-LICENSES.txt
 #include "PluginEditor.h"
+#include "engine/PitchMap.h"
 
 namespace
 {
@@ -57,7 +58,7 @@ public:
             "Includes code from Infrasonic Audio LLC and DaisySP (Electrosmith, MIT). "
             "Built with JUCE. This plug-in is licensed under the GNU AGPLv3; see "
             "LICENSE and THIRD-PARTY-LICENSES.txt that came with the download.\n\n"
-            "Milestone 3: both decks in Reel mode, routing and A/B crossfade. Slice and Drift modes, FX, modulators, tempo sync and MIDI control are not in yet.",
+            "Milestone 4: both decks with Reel, Slice and Drift modes, routing, A/B crossfade, tempo (internal or host) and launch quantise. FX, modulators, the sequencer and MIDI control are not in yet.",
             r.removeFromTop (r.getHeight() - 44), juce::Justification::topLeft, 20);
     }
 
@@ -90,6 +91,17 @@ void UnofficialSpotykachEditor::addLabelled (LabelledSlider& s, const juce::Stri
     s.attachment = std::make_unique<SliderAtt> (proc.apvts, paramId, s.slider);
 }
 
+void UnofficialSpotykachEditor::addCombo (LabelledCombo& c, const juce::String& paramId, const juce::String& text)
+{
+    if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (proc.apvts.getParameter (paramId)))
+        c.box.addItemList (choice->choices, 1);
+    addAndMakeVisible (c.box);
+    c.label.setText (text, juce::dontSendNotification);
+    c.label.setColour (juce::Label::textColourId, kText);
+    addAndMakeVisible (c.label);
+    c.attachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, paramId, c.box);
+}
+
 // A button press = parameter 0 -> 1, then back to 0 shortly after. The audio thread acts on the rising edge.
 void UnofficialSpotykachEditor::pulse (const juce::String& paramId)
 {
@@ -117,7 +129,7 @@ void UnofficialSpotykachEditor::setupDeck (int d)
     auto& ui = deckUI[(size_t) d];
     const juce::String tag = d == 0 ? "A" : "B";
 
-    ui.title.setText ("DECK " + tag + "  (REEL)", juce::dontSendNotification);
+    ui.title.setText ("DECK " + tag, juce::dontSendNotification);
     ui.title.setColour (juce::Label::textColourId, kAccent);
     addAndMakeVisible (ui.title);
     ui.status.setColour (juce::Label::textColourId, kText);
@@ -148,6 +160,24 @@ void UnofficialSpotykachEditor::setupDeck (int d)
         addAndMakeVisible (k.label);
         k.attachment = std::make_unique<SliderAtt> (proc.apvts, UnofficialSpotykachProcessor::deckId (d, base[i]), k.slider);
     }
+
+    using P = UnofficialSpotykachProcessor;
+    addCombo (ui.mode, P::deckId (d, "mode"), "Mode");
+    ui.mode.label.setVisible (false);
+    addCombo (ui.snap, P::deckId (d, "pitchSnap"), "Pitch Snap");
+    addLabelled (ui.offset,    P::deckId (d, "sliceOffset"), "Slice Offset", juce::Slider::LinearHorizontal);
+    addLabelled (ui.envLength, P::deckId (d, "envLength"),   "Env Length",   juce::Slider::LinearHorizontal);
+    addLabelled (ui.window,    P::deckId (d, "window"),      "Window",       juce::Slider::LinearHorizontal);
+
+    // The pitch knob shows what the engine will actually play, including pitch snap.
+    ui.knobs[2].slider.textFromValueFunction = [this, d] (double v)
+    {
+        const int snap = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId (d, "pitchSnap"))->load());
+        const float speed = usp::normToSpeed (usp::snapPitch ((float) v, snap));
+        if (speed < 0.005f) return juce::String ("stopped");
+        const float st = 12.0f * std::log2 (speed);
+        return juce::String (speed, 2) + "x " + (st >= 0 ? "+" : "") + juce::String (st, snap == 0 ? 1 : 0) + " st";
+    };
 }
 
 UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcessor& p)
@@ -170,6 +200,11 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     addLabelled (panRange,  "panRange",  "Pan Range",     juce::Slider::LinearHorizontal);
     addLabelled (outLevel,  "outLevel",  "Output Level",  juce::Slider::LinearHorizontal);
     outLevel.slider.setTextValueSuffix (" dB");
+    addLabelled (tempo, "tempo", "Tempo", juce::Slider::LinearHorizontal);
+    tempo.slider.setTextValueSuffix (" BPM");
+    addLabelled (click, "click", "Click", juce::Slider::LinearHorizontal);
+    addCombo (tempoSource, "tempoSource", "Source");
+    addCombo (quantise, "quantise", "Quantise");
 
     routeLabel.setText ("Routing", juce::dontSendNotification);
     routeLabel.setColour (juce::Label::textColourId, kText);
@@ -253,7 +288,9 @@ void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, fl
     auto head = r.removeFromTop (juce::roundToInt (22 * s));
     ui.title.setFont (font (15.0f, true));
     ui.status.setFont (font (12.0f));
-    ui.title.setBounds (head.removeFromLeft (head.getWidth() / 3));
+    ui.title.setBounds (head.removeFromLeft (head.getWidth() / 4));
+    ui.mode.box.setBounds (head.removeFromLeft (juce::roundToInt (96 * s)));
+    head.removeFromLeft (juce::roundToInt (8 * s));
     ui.status.setBounds (head);
 
     r.removeFromTop (juce::roundToInt (4 * s));
@@ -267,6 +304,25 @@ void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, fl
     }
 
     r.removeFromTop (juce::roundToInt (4 * s));
+    auto row2 = r.removeFromBottom (juce::roundToInt (24 * s));     // snap, offset, env length, window
+    r.removeFromBottom (juce::roundToInt (4 * s));
+    {
+        ui.snap.label.setFont (font (12.0f));
+        ui.snap.label.setBounds (row2.removeFromLeft (juce::roundToInt (62 * s)));
+        ui.snap.box.setBounds (row2.removeFromLeft (juce::roundToInt (118 * s)));
+        row2.removeFromLeft (juce::roundToInt (8 * s));
+        const int third = row2.getWidth() / 3;
+        auto place = [&] (LabelledSlider& ls, juce::Rectangle<int> cell, int labelW)
+        {
+            ls.label.setFont (font (11.0f));
+            ls.label.setBounds (cell.removeFromLeft (juce::roundToInt ((float) labelW * s)));
+            ls.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, juce::roundToInt (38 * s), juce::roundToInt (18 * s));
+            ls.slider.setBounds (cell);
+        };
+        place (ui.offset,    row2.removeFromLeft (third), 54);
+        place (ui.envLength, row2.removeFromLeft (third), 54);
+        place (ui.window,    row2, 46);
+    }
     ui.loopBar = r.removeFromBottom (juce::roundToInt (8 * s)).toFloat();
     r.removeFromBottom (juce::roundToInt (4 * s));
 
@@ -296,7 +352,7 @@ void UnofficialSpotykachEditor::resized()
     titleLabel.setBounds (top);
     r.removeFromTop (juce::roundToInt (8 * s));
 
-    const int deckH = juce::roundToInt (205 * s);
+    const int deckH = juce::roundToInt (236 * s);
     layoutDeck (0, r.removeFromTop (deckH), s);
     r.removeFromTop (juce::roundToInt (8 * s));
     layoutDeck (1, r.removeFromTop (deckH), s);
@@ -313,17 +369,33 @@ void UnofficialSpotykachEditor::resized()
     setLs (crossfade, r.removeFromTop (rowH), 100, 110);
     r.removeFromTop (juce::roundToInt (4 * s));
 
-    auto row2 = r.removeFromTop (rowH);
+    auto rowR = r.removeFromTop (rowH);
     routeLabel.setFont (font (13.0f));
-    routeLabel.setBounds (row2.removeFromLeft (juce::roundToInt (56 * s)));
-    routeBox.setBounds (row2.removeFromLeft (juce::roundToInt (136 * s)));
-    row2.removeFromLeft (juce::roundToInt (10 * s));
-    const int half = row2.getWidth() / 2;
-    setLs (panSpeed, row2.removeFromLeft (half), 62, 52);
-    setLs (panRange, row2, 62, 52);
+    routeLabel.setBounds (rowR.removeFromLeft (juce::roundToInt (56 * s)));
+    routeBox.setBounds (rowR.removeFromLeft (juce::roundToInt (136 * s)));
+    rowR.removeFromLeft (juce::roundToInt (10 * s));
+    const int halfR = rowR.getWidth() / 2;
+    setLs (panSpeed, rowR.removeFromLeft (halfR), 62, 52);
+    setLs (panRange, rowR, 62, 52);
     r.removeFromTop (juce::roundToInt (4 * s));
 
-    setLs (outLevel, r.removeFromTop (rowH), 100, 70);
+    auto rowT = r.removeFromTop (rowH);
+    setLs (tempo, rowT.removeFromLeft (rowT.getWidth() * 45 / 100), 56, 74);
+    rowT.removeFromLeft (juce::roundToInt (10 * s));
+    for (auto* cb : { &tempoSource, &quantise })
+    {
+        auto cell = rowT.removeFromLeft (cb == &tempoSource ? rowT.getWidth() * 42 / 100 : rowT.getWidth());
+        cb->label.setFont (font (13.0f));
+        cb->label.setBounds (cell.removeFromLeft (juce::roundToInt ((cb == &tempoSource ? 44.0f : 62.0f) * s)));
+        cb->box.setBounds (cell.reduced (0, juce::roundToInt (1 * s)));
+        rowT.removeFromLeft (juce::roundToInt (8 * s));
+    }
+    r.removeFromTop (juce::roundToInt (4 * s));
+
+    auto rowO = r.removeFromTop (rowH);
+    setLs (click, rowO.removeFromLeft (rowO.getWidth() * 42 / 100), 44, 52);
+    rowO.removeFromLeft (juce::roundToInt (10 * s));
+    setLs (outLevel, rowO, 86, 64);
     r.removeFromTop (juce::roundToInt (8 * s));
     meterArea = r.removeFromTop (juce::roundToInt (10 * s)).toFloat();
 
@@ -351,6 +423,25 @@ void UnofficialSpotykachEditor::timerCallback()
         else                         state = "STOPPED";
         deckUI[d].status.setText (state + "   " + juce::String (s.loopSeconds.load(), 2) + " s", juce::dontSendNotification);
     }
+
+    for (size_t d = 0; d < 2; ++d)
+    {
+        auto& ui = deckUI[d];
+        using P = UnofficialSpotykachProcessor;
+        const int mode = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId ((int) d, "mode"))->load());
+        const int snap = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId ((int) d, "pitchSnap"))->load());
+        if (snap != ui.lastSnap) { ui.lastSnap = snap; ui.knobs[2].slider.updateText(); }
+        ui.offset.slider.setEnabled (mode == 1);                    // Slice only
+        ui.envLength.slider.setEnabled (mode == 2);                 // Drift only
+        ui.window.slider.setEnabled (mode == 2);
+        const float env = proc.apvts.getRawParameterValue (P::deckId ((int) d, "envelope"))->load();
+        if (mode == 2 && env < 0.05f)
+            ui.status.setText ("Drift is silent while Envelope is off", juce::dontSendNotification);
+    }
+
+    const bool hostSource = juce::roundToInt (proc.apvts.getRawParameterValue ("tempoSource")->load()) == 1;
+    tempo.slider.setEnabled (! hostSource);
+    tempo.label.setText (! hostSource ? "Tempo" : (st.hostLocked.load() ? "Locked" : "Host"), juce::dontSendNotification);
 
     const bool generative = juce::roundToInt (routeBox.getSelectedId()) == 3;
     panSpeed.slider.setEnabled (generative);

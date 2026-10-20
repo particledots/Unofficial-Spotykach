@@ -63,7 +63,7 @@ int main()
         press ("b_recInternal"); run (1); release ("b_recInternal"); run (1);
         for (int w : { 480, 640, 900, 1280 })
         {
-            ed->setSize (w, (int) std::lround (w * 620.0 / 640.0));
+            ed->setSize (w, (int) std::lround (w * 712.0 / 640.0));
             auto snap = ed->createComponentSnapshot (ed->getLocalBounds());
             CHECK (snap.isValid());
             if (const char* dir = std::getenv ("US_SNAPSHOT_DIR"))   // optional: save pictures for inspection
@@ -86,7 +86,7 @@ int main()
         for (int w : { 900, 500 })
         {
             std::unique_ptr<juce::AudioProcessorEditor> e1 (proc.createEditor());
-            e1->setSize (w, (int) std::lround (w * 620.0 / 640.0));
+            e1->setSize (w, (int) std::lround (w * 712.0 / 640.0));
             e1.reset();
             std::unique_ptr<juce::AudioProcessorEditor> e2 (proc.createEditor());
             std::printf ("  reopen: wanted %d, got %d\n", w, e2->getWidth());

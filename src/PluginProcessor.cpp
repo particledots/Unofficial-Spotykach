@@ -3,6 +3,7 @@
 // Third-party notices: THIRD-PARTY-LICENSES.txt
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "engine/PitchMap.h"
 
 namespace
 {
@@ -20,6 +21,11 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
     for (int d = 0; d < 2; ++d)
     {
         auto& p = decks[d];
+        p.mode        = apvts.getRawParameterValue (deckId (d, "mode"));
+        p.pitchSnap   = apvts.getRawParameterValue (deckId (d, "pitchSnap"));
+        p.sliceOffset = apvts.getRawParameterValue (deckId (d, "sliceOffset"));
+        p.envLength   = apvts.getRawParameterValue (deckId (d, "envLength"));
+        p.window      = apvts.getRawParameterValue (deckId (d, "window"));
         p.position = apvts.getRawParameterValue (deckId (d, "position"));
         p.size     = apvts.getRawParameterValue (deckId (d, "size"));
         p.pitch    = apvts.getRawParameterValue (deckId (d, "pitch"));
@@ -33,6 +39,10 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
     pRoute     = apvts.getRawParameterValue ("route");
     pPanSpeed  = apvts.getRawParameterValue ("panSpeed");
     pPanRange  = apvts.getRawParameterValue ("panRange");
+    pTempo       = apvts.getRawParameterValue ("tempo");
+    pTempoSource = apvts.getRawParameterValue ("tempoSource");
+    pQuantise    = apvts.getRawParameterValue ("quantise");
+    pClick       = apvts.getRawParameterValue ("click");
     pOutLevel  = apvts.getRawParameterValue ("outLevel");
 }
 
@@ -61,6 +71,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
             layout.add (std::make_unique<juce::AudioParameterFloat> (id (base), tag + name,
                 NormalisableRange<float> (0.0f, 1.0f, 0.001f), def, Attrs().withStringFromValueFunction (text)));
         };
+        layout.add (std::make_unique<juce::AudioParameterChoice> (id ("mode"), tag + "Mode",
+            juce::StringArray { "Reel", "Slice", "Drift" }, 0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (id ("pitchSnap"), tag + "Pitch Snap",
+            juce::StringArray { "Off", "Steps (octaves, 5ths)", "Semitones" }, 0));
+        knob ("sliceOffset", "Slice Offset", 0.0f, percentText);
+        knob ("envLength",   "Envelope Length", 1.0f, percentText);
+        knob ("window",      "Window", 0.2f, percentText);
         knob ("position", "Position", 0.0f,  percentText);
         knob ("size",     "Size",     1.0f,  percentText);
         knob ("pitch",    "Pitch",    0.5f,  pitchText);
@@ -82,6 +99,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
         })));
     layout.add (std::make_unique<juce::AudioParameterChoice> (ParameterID { "route", 1 }, "Routing",
         juce::StringArray { "Double Mono", "Stereo", "Generative Stereo" }, 1));
+    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "tempo", 1 }, "Tempo",
+        NormalisableRange<float> (20.0f, 250.0f, 0.1f), 120.0f, Attrs().withLabel ("BPM")));
+    layout.add (std::make_unique<juce::AudioParameterChoice> (ParameterID { "tempoSource", 1 }, "Tempo Source",
+        juce::StringArray { "Internal", "Host" }, 1));
+    {
+        juce::StringArray q;
+        q.add ("1/16");
+        for (int i = 1; i <= 16; ++i) q.add (juce::String (i) + "/4");     // quarter notes, as in the firmware list
+        layout.add (std::make_unique<juce::AudioParameterChoice> (ParameterID { "quantise", 1 }, "Launch Quantise", q, 1));
+    }
+    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "click", 1 }, "Click Level",
+        NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.0f, Attrs().withStringFromValueFunction (percentText)));
     layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "panSpeed", 1 }, "Pan Speed",
         NormalisableRange<float> (0.0f, 1.0f, 0.001f), 1.0f, Attrs().withStringFromValueFunction (percentText)));
     layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "panRange", 1 }, "Pan Range",
@@ -158,6 +187,26 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
         t.envelope = dp.envelope->load();
         t.mix      = dp.mix->load();
         t.feedback = dp.feedback->load();
+        t.mode        = juce::jlimit (0, 2, juce::roundToInt (dp.mode->load()));
+        t.pitchSnap   = juce::jlimit (0, 2, juce::roundToInt (dp.pitchSnap->load()));
+        t.sliceOffset = dp.sliceOffset->load();
+        t.envLength   = dp.envLength->load();
+        t.window      = dp.window->load();
+    }
+    p.tempoBpm  = pTempo->load();
+    p.hostSync  = juce::roundToInt (pTempoSource->load()) == 1;
+    p.launchQuantise = juce::jlimit (0, 16, juce::roundToInt (pQuantise->load()));
+    p.clickLevel = pClick->load();
+
+    usp::HostTransport host;
+    if (auto* ph = getPlayHead())
+    {
+        if (auto pos = ph->getPosition())
+        {
+            host.playing = pos->getIsPlaying();
+            if (auto bpm = pos->getBpm())         { host.hasTempo = *bpm >= 20.0 && *bpm <= 400.0; host.bpm = *bpm; }
+            if (auto ppq = pos->getPpqPosition()) { host.hasPpq = true; host.ppq = *ppq; }
+        }
     }
     p.crossfade = pCrossfade->load();
     p.route     = juce::jlimit (0, 2, juce::roundToInt (pRoute->load()));
@@ -166,7 +215,7 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
 
     float* left  = buffer.getWritePointer (0);
     float* right = numChans > 1 ? buffer.getWritePointer (1) : left;
-    engine.process (left, right, left, right, numSamples, p, actions);
+    engine.process (left, right, left, right, numSamples, p, actions, host);
 
     // Output level, smoothed. At 0 dB the audio is untouched.
     outGain.setTargetValue (juce::Decibels::decibelsToGain (pOutLevel->load()));

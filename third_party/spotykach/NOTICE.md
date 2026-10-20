@@ -20,3 +20,4 @@ re-implementation of its interface in `src/engine/shim/synclock.h`).
 - `src/core/deck.cpp`: function-local static `Event` moved to namespace scope.
 - `src/core/core.cpp`, `src/core/core.h`: `Core::init` takes caller-supplied buffers instead of the
   Daisy SDRAM singleton (adds `Core::Buffers`).
+- `src/core/generator.cpp`: guarded a modulus by zero in `apply_dimensions()` (Slice mode on an empty deck). ARM tolerates it, x86 raises SIGFPE.

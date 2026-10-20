@@ -25,6 +25,11 @@ namespace usp
         float envelope = 0.0f;   // 0..1, 0 = off
         float mix      = 0.5f;   // deck in/out mix: 0 = input only, 1 = loop only
         float feedback = 0.95f;  // 0..1 (overdub level)
+        int   mode     = 0;      // 0 = Reel, 1 = Slice, 2 = Drift
+        float sliceOffset = 0.0f; // 0..1 (Slice: step through slices; has an effect only when the loop has slices)
+        float envLength   = 1.0f; // 0..1 (Drift only)
+        float window      = 0.2f; // 0..1 (Drift only: grain size)
+        int   pitchSnap   = 0;   // 0 = off, 1 = firmware steps (-24 -12 -7 0 +7 +12 +24 st), 2 = semitones
     };
 
     enum EngineRoute : int { kRouteDoubleMono = 0, kRouteStereo = 1, kRouteGenerativeStereo = 2 };
@@ -36,6 +41,19 @@ namespace usp
         int   route     = kRouteStereo;
         float panSpeed  = 1.0f;      // Generative Stereo only
         float panRange  = 0.6f;      // Generative Stereo only
+        float tempoBpm  = 120.0f;    // internal tempo, 20..250
+        bool  hostSync  = false;     // follow the host's tempo and beat position
+        int   launchQuantise = 1;    // index 0..16 into the firmware's list (1/16, 1/4, 2/4 ... 16/4)
+        float clickLevel = 0.0f;     // 0..1
+    };
+
+    struct HostTransport
+    {
+        bool   playing = false;
+        bool   hasTempo = false;
+        double bpm = 120.0;
+        bool   hasPpq = false;
+        double ppq = 0.0;            // quarter-note position at the start of the block
     };
 
     // Rising-edge button presses, as bit flags. Deck A uses bits 0-7, Deck B bits 8-15.
@@ -63,6 +81,8 @@ namespace usp
     struct EngineStatus
     {
         DeckStatus deck[2];
+        std::atomic<bool>     hostLocked { false };    // clock is locked to the host's beat
+        std::atomic<float>    tempoBpm { 120.0f };     // tempo the engine is actually using
         std::atomic<uint32_t> underruns { 0 };         // output frames the resampler could not supply
     };
 
@@ -80,7 +100,7 @@ namespace usp
 
         // Audio thread. in/out may be the same arrays. n may be any size >= 0.
         void process (const float* inL, const float* inR, float* outL, float* outR, int n,
-                      const EngineParams& params, uint32_t actions);
+                      const EngineParams& params, uint32_t actions, const HostTransport& host = HostTransport());
 
         const EngineStatus& status() const { return statusValues; }
 

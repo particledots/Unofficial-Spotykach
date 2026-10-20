@@ -15,7 +15,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int kBaseWidth = 640, kBaseHeight = 620;
+    static constexpr int kBaseWidth = 640, kBaseHeight = 712;
 
 private:
     class AboutPanel;
@@ -27,23 +27,33 @@ private:
         juce::Label label;
         std::unique_ptr<SliderAtt> attachment;
     };
-    struct DeckUI
-    {
-        juce::Label title, status;
-        std::array<juce::TextButton, UnofficialSpotykachProcessor::kNumDeckButtons> buttons;
-        std::array<Knob, 6> knobs;      // position, size, pitch, envelope, mix, feedback
-        juce::Rectangle<float> panel, loopBar;
-    };
     struct LabelledSlider
     {
         juce::Slider slider;
         juce::Label label;
         std::unique_ptr<SliderAtt> attachment;
     };
+    struct LabelledCombo
+    {
+        juce::ComboBox box;
+        juce::Label label;
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment;
+    };
+    struct DeckUI
+    {
+        juce::Label title, status;
+        std::array<juce::TextButton, UnofficialSpotykachProcessor::kNumDeckButtons> buttons;
+        std::array<Knob, 6> knobs;      // position, size, pitch, envelope, mix, feedback
+        LabelledCombo mode, snap;
+        LabelledSlider offset, envLength, window;
+        int lastSnap = -1;
+        juce::Rectangle<float> panel, loopBar;
+    };
 
     void timerCallback() override;
     void setupDeck (int deck);
     void addLabelled (LabelledSlider&, const juce::String& paramId, const juce::String& text, juce::Slider::SliderStyle);
+    void addCombo (LabelledCombo&, const juce::String& paramId, const juce::String& text);
     void pulse (const juce::String& paramId);
     void layoutDeck (int deck, juce::Rectangle<int> area, float s);
     juce::Font font (float size, bool bold = false) const;
@@ -54,7 +64,8 @@ private:
 
     juce::Label titleLabel, versionLabel;
     std::array<DeckUI, 2> deckUI;
-    LabelledSlider crossfade, panSpeed, panRange, outLevel;
+    LabelledSlider crossfade, panSpeed, panRange, outLevel, tempo, click;
+    LabelledCombo tempoSource, quantise;
     juce::Label routeLabel;
     juce::ComboBox routeBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> routeAttachment;

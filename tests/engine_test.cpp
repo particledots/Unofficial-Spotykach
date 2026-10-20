@@ -39,6 +39,7 @@ struct Rig
     int block;
     EngineParams params;
     std::vector<float> lastOutR;                 // right output of the last run()
+    HostTransport host;                          // advanced by run() while host.playing
     const std::vector<float>* rightIn = nullptr; // if set, used as right input (same length as the left input)
 
     Rig (double r, int b) : rate (r), block (b) { params.crossfade = 0.0f; engine.prepare (r, b); }
@@ -54,7 +55,8 @@ struct Rig
             const int n = (int) std::min ((size_t) block, in.size() - off);
             const long before = allocCount();
             engine.process (inCopy.data() + off, inR.data() + off, out.data() + off, outR.data() + off, n,
-                            params, first ? actionsAtStart : 0u);
+                            params, first ? actionsAtStart : 0u, host);
+            if (host.playing) host.ppq += (double) n / rate * host.bpm / 60.0;
             gAudioThreadAllocs += allocCount() - before;
             first = false;
             off += (size_t) n;
@@ -216,6 +218,94 @@ static void testDecks (double rate, int block)
     }
 }
 
+static int zeroCrossings (const std::vector<float>& v, size_t a, size_t b)
+{
+    int n = 0;
+    for (size_t i = a + 1; i < b; ++i) if ((v[i - 1] < 0.0f) != (v[i] < 0.0f)) ++n;
+    return n;
+}
+
+// Slice and Drift modes, pitch snap, host sync.
+static void testModesTempoPitch (double rate, int block)
+{
+    const auto tone = sine (rate, 2.0, 330.0, 0.5f);
+    auto level = [&] (const std::vector<float>& v) { return rms (v, v.size() / 4, v.size()); };
+    const uint32_t recA = deckAction (0, kActionRecord), playA = deckAction (0, kActionPlay);
+
+    for (int mode = 1; mode <= 2; ++mode)    // 1 = Slice, 2 = Drift
+    {
+        Rig r (rate, block);
+        r.params.deck[0].mode = mode;
+        r.params.deck[0].mix = 1.0f;
+        r.params.deck[0].envelope = mode == 2 ? 0.5f : 0.0f;   // Drift is silent with the envelope off
+        r.run (silence (rate, 0.3));
+        r.run (silence (rate, 0.05), recA);
+        r.run (tone);
+        r.run (silence (rate, 0.05), recA);
+        r.run (silence (rate, 0.05), playA);
+        r.run (silence (rate, 0.5));
+        auto o = r.run (silence (rate, 2.0));
+        const double lv = level (o);
+        const auto& s = r.engine.status();
+        std::printf ("  %s mode: rms %.4f, loop %.2f s, playing=%d, underruns=%u\n", mode == 1 ? "slice" : "drift", lv,
+                    s.deck[0].loopSeconds.load(), (int) s.deck[0].playing.load(), (unsigned) s.underruns.load());
+        CHECK (finiteAndBounded (o), "mode %d output not finite", mode);
+        CHECK (! s.deck[0].empty.load(), "mode %d recorded nothing", mode);
+        CHECK (lv > 0.01, "mode %d is silent (rms %.5f)", mode, lv);
+        CHECK (s.underruns.load() == 0, "underruns %u", (unsigned) s.underruns.load());
+        // switch back to Reel and through all modes while playing: must stay finite
+        for (int m : { 0, 2, 1, 0 })
+        {
+            r.params.deck[0].mode = m;
+            auto o2 = r.run (silence (rate, 0.4));
+            CHECK (finiteAndBounded (o2), "output not finite after switching to mode %d", m);
+        }
+    }
+
+    {   // Pitch snap: +12 semitones via the snapped knob must sound one octave up, like the free knob at the equivalent value.
+        auto octave = [&] (int snap, float pitch)
+        {
+            Rig r (rate, block);
+            r.params.deck[0].mix = 1.0f;
+            r.run (silence (rate, 0.3));
+            r.run (silence (rate, 0.05), recA);
+            r.run (tone);
+            r.run (silence (rate, 0.05), recA);
+            r.params.deck[0].pitchSnap = snap;
+            r.params.deck[0].pitch = pitch;
+            r.run (silence (rate, 0.05), playA);
+            r.run (silence (rate, 0.5));
+            auto o = r.run (silence (rate, 0.5));
+            return zeroCrossings (o, 0, o.size());
+        };
+        const int base = octave (0, 0.5f), up = octave (2, 0.75f), steps = octave (1, 0.68f);   // 0.68 -> step index 4 -> +7 st
+        std::printf ("  pitch: unity %d crossings/0.5 s, snapped +12 st %d, steps(+7 st) %d\n", base, up, steps);
+        CHECK (std::abs (up - 2 * base) < base / 10 + 6, "snapped +12 st is not an octave up (%d vs 2x%d)", up, base);
+        const double fifth = std::pow (2.0, 7.0 / 12.0);
+        CHECK (std::abs (steps - fifth * base) < base / 10 + 6, "step +7 st wrong (%d vs %.0f)", steps, fifth * base);
+    }
+
+    {   // Host sync: locks on the next beat while the host plays, reports the host tempo, drops out when it stops.
+        Rig r (rate, block);
+        r.params.hostSync = true;
+        r.params.tempoBpm = 90.0f;
+        r.host.hasTempo = true; r.host.hasPpq = true; r.host.bpm = 140.0; r.host.ppq = 3.3; r.host.playing = true;
+        r.run (silence (rate, 0.1));
+        const bool earlyLock = r.engine.status().hostLocked.load();
+        r.run (silence (rate, 1.5));
+        const auto& s = r.engine.status();
+        std::printf ("  host sync: locked=%d (early %d), tempo %.1f\n", (int) s.hostLocked.load(), (int) earlyLock, s.tempoBpm.load());
+        CHECK (s.hostLocked.load(), "host sync did not lock");
+        CHECK (std::abs (s.tempoBpm.load() - 140.0f) < 1.0f, "engine tempo %.2f, expected the host's 140", s.tempoBpm.load());
+        r.host.playing = false;
+        r.run (silence (rate, 0.3));
+        CHECK (! r.engine.status().hostLocked.load(), "still locked after the host stopped");
+        r.params.hostSync = false;
+        r.run (silence (rate, 0.3));
+        CHECK (std::abs (r.engine.status().tempoBpm.load() - 90.0f) < 1.0f, "internal tempo %.2f, expected 90", r.engine.status().tempoBpm.load());
+    }
+}
+
 static void testInstancesAreIndependent()
 {
     Rig a (44100.0, 512), b (96000.0, 137);
@@ -248,6 +338,7 @@ int main (int argc, char** argv)
             testLatency (rate, block);
             testRecordPlay (rate, block);
             if (block == 64 || block == 512) testDecks (rate, block);
+            if (block == 64 || block == 512) testModesTempoPitch (rate, block);
         }
 
     std::printf ("two independent instances\n");

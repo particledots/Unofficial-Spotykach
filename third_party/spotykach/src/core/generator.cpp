@@ -141,7 +141,10 @@ void Generator::apply_dimensions()
   else if (_snap_to_cue) { /* slice mode */
     _cue_size_delta = static_cast<uint8_t>(std::max(abs_size / _slice_size, 1.f));
     auto start_idx = static_cast<uint32_t>(std::round(norm_start * _auto_cue_max_idx) + _offset);
-    start_idx %= (_auto_cue_max_idx + 1);
+    // MODIFIED for Unofficial Spotykach (2026): with no slices (empty deck) _auto_cue_max_idx wraps and the
+    // modulus below becomes 0. The ARM firmware tolerates that (integer divide by zero yields 0); x86 traps (SIGFPE).
+    if (_auto_cue_max_idx + 1 != 0) start_idx %= (_auto_cue_max_idx + 1);
+    else start_idx = 0;
     abs_start = _slice_size * start_idx;
     if (!_alt_size) {
       // Snap size to 1/8th by default, except for min and max where it snaps to 1/16th.

@@ -1,7 +1,7 @@
 # decisions.md: Spotykach (unofficial)
 
 Running file. Updated at the end of each milestone.
-Last updated: 2026-10-20, M3 v0.2.1 (window-size fix) built, awaiting retest of items 2 and 9.
+Last updated: 2026-10-20, M3 accepted; M4 built (awaiting your test report).
 Full reasoning and evidence tags are in SPEC.md; section numbers below refer to it.
 
 ---
@@ -40,6 +40,9 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | D26 | Parameter ids: Deck A keeps its M2 ids (so M2 sessions load); Deck B uses a `b_` prefix. New: crossfade (default 0.5), route (Double Mono / Stereo / Generative Stereo, default Stereo), panSpeed (1.0), panRange (0.6; defaults from `_init_values`), trig and recInternal buttons per deck. **Behaviour change vs M2:** crossfade default 0.5 (M2 was effectively Deck A only), so Deck A is now at about 0.75 gain with the crossfade centred. I did not verify the hardware knob's resting position. | Mine | Square-law crossfade in `xfade.h`. |
 | D27 | Double Mono: left input goes to Deck A and right input to Deck B, outputs left = A, right = B. Stereo and Generative Stereo feed both decks the same stereo input. | Mine | Read from `core.cpp` `Core::process`. |
 | D28 | Window: base 640x620, aspect ratio locked, resizable from 75% to 200% (I chose 75% as the minimum because labels become unreadable below it; you said keep the default as is). Width is stored in the plug-in state and restored. Rendered headlessly on Linux only; I have not seen it on macOS. | Mine / yours | |
+| D29 | M4 pitch usability (your request): per-deck **Pitch Snap** = Off / Steps (the firmware's list: -24, -12, -7, 0, +7, +12, +24 semitones) / Semitones (whole semitones -24..+24, knob centre = 0). Free mode is unchanged. The pitch knob's text shows the pitch the engine will play. In snap modes there is no "stopped" position. | Mine | Firmware `kSpeedSteps` and `snapped_speed()`; the firmware did this only while Alt was held. |
+| D30 | M4 modes: per-deck Mode Reel / Slice / Drift with Slice Offset (Slice), Envelope Length and Window (Drift). **Drift is silent while Envelope is below about 5 %** (core suspends the voice: `Vox::set_shape`); the window says so. Slice mono/stereo is NOT exposed: the firmware stores it in a process-wide singleton (`Config::dynamic()`), which would be shared between plug-in instances. | Mine | |
+| D31 | M4 tempo: Tempo (20-250 BPM) and Tempo Source Internal / Host (default Host). With Host: tempo follows the host; while the host plays, the clock is phase-locked to the host's beat position (24 PPQN ticks derived from host PPQ), locking on the next whole beat; if the host stops or jumps, the internal clock keeps running at the host tempo. Beats, not bars: launch quantise counts from the beat the lock was taken on. **Lock accuracy is unmeasured against a real host; verify by ear.** Launch Quantise list from the firmware (1/16, 1/4, 2/4 ... 16/4). Click Level added. Not in M4: tap tempo, fit-tempo-to-loop, external clock jack. | Mine | |
 | D23 | CI now runs a blocking headless `engine_test` and a blocking editor smoke test (opens the real editor, renders it, presses the buttons, runs audio at 44.1/48/96 kHz). The smoke test passed on the macOS runner (this resolves the M1 "unverified that it works on a headless runner" proposal). It does not prove the window looks right or that Logic accepts it. | Mine | |
 
 ---
@@ -55,6 +58,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | Q5 | Should the Mod out jack and Gate out have any plug-in equivalent (e.g. internal modulator assignable to a plug-in parameter), or are they dropped? | No (M5) | Drop for now. |
 | Q6 | Tapes (6 tapes × 6 tracks on SD): what should this be in a project (e.g. saved with the project, or exportable WAV)? | No (M8) | Save loops inside the plug-in state; discuss at M8. |
 | Q-grit | Grit keeps separate values per mode (Drive/Reduce/Filter): expose all three sets, or one set that follows the current mode? | No (M5) | One set per mode, to match the firmware. |
+| Q7 | Envelope at minimum has a hard attack (firmware behaviour). Should I add an optional short "Declick" fade (a few ms, off by default or on by default?) so the minimum is not abrupt? It would differ from the hardware. | No | Add as a per-deck option, **on** by default, if you find the hard edge unpleasant. Your call. |
 | Q-engine | Slice mode: mono/stereo toggle and `set_size` alt flag still unread. | No (M3+) | Read before Slice work. |
 
 ---
@@ -67,7 +71,8 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | M1 | **Fixed build 0f92d6e (run 39484308800, CI green incl. arch+minimum-OS check). Awaiting your Logic test on both Macs.** Build 8b83286 CRASHED Logic 10.7.8 on the Intel Mac (macOS 12.7.6) when the plug-in window opened: my bug (setSize() in the editor constructor ran resized() before the About panel was created; null dereference). `auval` passed on the Intel Mac for 8b83286 but does not open the window, so it cannot catch this. Superseded builds (do not test): 0904db3, 48e54e3, e6eceaa, 1c047cc, 8b83286. M4 (macOS 26.5, Logic 11.2.2) was not tested on 8b83286 since it would crash the same way. |
 | M1 result | **Accepted.** Build 0f92d6e passed all 6 checks on both Macs. | |
 | M2 | **Accepted 2026-10-20: all 7 checks WORKED on both Macs (build 9a1881e, run 39489948406).** CI: engine_test, arch+minimum-OS check, editor smoke test, auval all passed. Scope: Deck A, Reel mode only (record, play, reverse, position, size, pitch, envelope, mix, feedback, output level). Tested only headlessly: Reel/Deck A with Stereo route; Slice, Drift, Deck B, FX, modulators, external clock are untested. Sound quality unverified. | |
-| M3 | **Your test (build 9a0b1e8, both Macs): items 1, 3-8 worked ("sounding brilliant"; item 7 "i think so", not confirmed with distinct L/R sources). Item 2/9 FAILED: window size was not remembered. Cause (reproduced headlessly): `setResizeLimits()` in the editor constructor triggers `resized()` at size 0, which overwrote the stored width before it was read. Fixed in v0.2.1 (read first, store only after construction) and the smoke test now closes and reopens the editor and checks the size. Loops are not saved with the project: expected, planned for M8 (D-loop persistence).** Earlier status: built, awaiting test. Engine tests pass for both decks, crossfade, Double Mono, record-from-other-deck and trig. Not verified: how Generative Stereo sounds (smoke tested for finite output only), whether Trig sounds right on a playing loop, macOS appearance. |
+| M3 | **ACCEPTED 2026-10-20 (v0.2.1, build 39a0088): window size and project recall retested OK on both Macs; Double Mono confirmed.** Earlier detail: your test (build 9a0b1e8, both Macs): items 1, 3-8 worked ("sounding brilliant"; item 7 "i think so", not confirmed with distinct L/R sources). Item 2/9 FAILED: window size was not remembered. Cause (reproduced headlessly): `setResizeLimits()` in the editor constructor triggers `resized()` at size 0, which overwrote the stored width before it was read. Fixed in v0.2.1 (read first, store only after construction) and the smoke test now closes and reopens the editor and checks the size. Loops are not saved with the project: expected, planned for M8 (D-loop persistence).** Earlier status: built, awaiting test. Engine tests pass for both decks, crossfade, Double Mono, record-from-other-deck and trig. Not verified: how Generative Stereo sounds (smoke tested for finite output only), whether Trig sounds right on a playing loop, macOS appearance. |
+| M4 | **Built; awaiting your Logic test.** Headless: Slice and Drift record and play audibly, pitch snap gives exact octave and fifth, host sync locks and follows tempo, no allocations, clean under ASan/UBSan. Not verified: how Slice and Drift sound compared with the hardware, host-lock accuracy, macOS appearance. |
 
 ---
 
@@ -75,6 +80,11 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 
 - `auval` does not open the plug-in window. A green CI and a passing `auval` do not prove the editor works. A window-open test (a headless editor smoke test in CI, or opening it in Logic) is needed for every milestone that changes the UI. Proposal: add an editor smoke test to CI in M2 (unverified that it works on a headless runner).
 - Intel Mac details: macOS 12.7.6 (crash report), Logic 10.7.8 (build 5817), MacBook Pro (MacBookPro11,2). Your earlier notes said 12.7; the crash report says 12.7.6.
+
+---
+
+- Running the engine tests on x86 caught a crash that ARM hides: `Generator::apply_dimensions()` takes a modulus by zero in Slice mode on an empty deck (ARM returns 0, x86 raises SIGFPE and would have crashed Logic on the Intel Mac). Patched, and recorded in `third_party/spotykach/NOTICE.md`. Lesson: test on x86 and under UBSan, not only on the M4.
+- Your envelope observation: at minimum (0) the firmware envelope is OFF, so the playback edges are hard. The attack only becomes a ramp above about a third of the knob (`ADEnvelope::_make_shape`). I have not changed it; see the question below.
 
 ---
 
@@ -91,4 +101,5 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 9. Unused third ("undo") source buffer is allocated.
 10. MIDI CC on a non-matching channel passes `Deck::Count` as a deck index (`core.ui.cpp:710-717`).
 11. Manual vs code: Alt+Trig hold 2 s vs 1.5 s; Grit "Mix" described as overall gain but implemented as dry/wet; Grit Position (character) and Alt+Mix (feedback) and Tap+Cycle/Glow on deck B (pan speed/range) not documented.
+13. `generator.cpp:144` modulus by zero on an empty deck (see Lessons).
 12. Credits spelling: "Litvinenko" (manual) vs "Lytvynenko" (CREDITS.md).

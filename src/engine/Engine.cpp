@@ -7,6 +7,7 @@
 #include "Engine.h"
 #include "StreamResampler.h"
 #include "EngineTime.h"
+#include "PitchMap.h"
 
 #include "core.h"        // upstream: src/core/core.h
 #include "config.h"
@@ -183,12 +184,35 @@ namespace usp
 
                 auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
                 auto& g = deck.voxs();
+
+                // Mode switch, as in CoreUI::_process_switches(): set the mode, re-infer the panner,
+                // then re-apply size (and here also pitch/position/envelope) once the mode is in effect.
+                if (first || t.mode != lastModeParam[d])
+                {
+                    lastModeParam[d] = t.mode;
+                    deck.set_mode (t.mode == 1 ? Mode::Slice : t.mode == 2 ? Mode::Drift : Mode::Reel);
+                    core->infer_panner_mode();
+                }
+                if (deck.mode() != appliedMode[d])
+                {
+                    appliedMode[d] = deck.mode();
+                    l.position = l.size = l.pitch = l.envelope = -1.0f;
+                }
+
+                const float pitchValue = snapPitch (c.pitch, t.pitchSnap);
                 if (changed (l.position, c.position)) g.set_start (c.position);
                 if (changed (l.size, c.size))         g.set_size (c.size, false);
                 if (changed (l.envelope, c.envelope)) g.set_shape (c.envelope);
-                if (changed (l.pitch, c.pitch))       g.set_speed (c.pitch);   // Reel: speed (Slice would use set_pitch)
+                if (changed (l.pitch, pitchValue))
+                {
+                    if (deck.mode() == Mode::Slice) g.set_pitch (pitchValue);   // Slice: pitch without changing speed
+                    else                            g.set_speed (pitchValue);   // Reel/Drift: tape speed
+                }
                 if (changed (l.mix, c.mix))           deck.set_inout_mix (c.mix);
                 if (changed (l.feedback, c.feedback)) deck.set_feedback (c.feedback);
+                if (changed (l.sliceOffset, t.sliceOffset)) g.set_start_offset_interval (t.sliceOffset);
+                if (changed (l.envLength, t.envLength))     g.set_env_size (t.envLength);
+                if (changed (l.window, t.window))           g.set_win_size (t.window);
             }
 
             // The core smooths the crossfade itself (OnePoleSmoother), so it goes in directly.
@@ -201,7 +225,73 @@ namespace usp
             }
             if (changed (last.panSpeed, target.panSpeed)) core->panner().set_speed (target.panSpeed);
             if (changed (last.panRange, target.panRange)) core->panner().set_range (target.panRange);
+            if (changed (last.clickLevel, target.clickLevel)) core->set_click_mix (target.clickLevel);
+            if (first || target.launchQuantise != last.launchQuantise)
+            {
+                last.launchQuantise = target.launchQuantise;
+                core->driver().set_key_tick_interval_norm ((float) std::min (16, std::max (0, target.launchQuantise)) / 16.0f);
+            }
+            core->driver().set_tempo_norm (Tempo::abs_to_norm (std::min (250.0f, std::max (20.0f, effectiveBpm()))));
             first = false;
+        }
+
+        float effectiveBpm() const
+        {
+            return (target.hostSync && hostNow.hasTempo) ? (float) hostNow.bpm : target.tempoBpm;
+        }
+
+        // Host sync. While the host is playing and gives a beat position, the driver is switched to its
+        // external (24 PPQN) source and fed one tick per 1/24 beat, so launch quantisation and slice
+        // grids land on the host's beats. The lock is taken on the next whole beat. Otherwise the
+        // internal clock runs at the host's tempo (or at the Tempo parameter when sync is off).
+        // Returns true when this chunk carries an external tick.
+        bool hostClockStep()
+        {
+            using namespace spotykach;
+            auto& drv = core->driver();
+            const bool wantExt = target.hostSync && hostNow.playing && hostNow.hasPpq && hostNow.hasTempo;
+            if (! wantExt)
+            {
+                while (drv.source() != Driver::Source::internal) drv.toggle_source();
+                clockLocked = false;
+                ppqValid = false;
+                hostFresh = false;
+                status.hostLocked.store (false, std::memory_order_relaxed);
+                return false;
+            }
+
+            const double step = (double) effectiveBpm() / 60.0 * (double) kChunk / kEngineRate;
+            double prev = ppqEst;
+            bool relock = false;
+            if (! ppqValid || (hostFresh && std::abs (ppqEst - hostNow.ppq) > 0.1))
+            {
+                ppqEst = hostNow.ppq;
+                prev = ppqEst - 1.0e-9;
+                ppqValid = true;
+                relock = true;
+                if (clockLocked)
+                {
+                    clockLocked = false;                 // position jumped: drop back to internal until the next beat
+                    while (drv.source() != Driver::Source::internal) drv.toggle_source();
+                }
+            }
+            else
+            {
+                ppqEst += step;
+            }
+            hostFresh = false;
+
+            const bool crossedBeat = std::floor (ppqEst) > std::floor (prev)
+                                  || (relock && (ppqEst - std::floor (ppqEst)) < 0.01);
+            if (! clockLocked)
+            {
+                if (! crossedBeat) return false;
+                while (drv.source() != Driver::Source::midi) drv.toggle_source();   // internal -> ts4 -> midi (24 PPQN)
+                clockLocked = true;
+                status.hostLocked.store (true, std::memory_order_relaxed);
+                return true;
+            }
+            return std::floor (ppqEst * 24.0) > std::floor (prev * 24.0);
         }
 
         bool changed (float& lastValue, const float v)
@@ -283,13 +373,14 @@ namespace usp
             usp::gEngineMs = (uint32_t) (engineSamples / 48);
             applyIdleCvInputs();
             applyParams();
-            core->driver().tick (false);
+            core->driver().tick (hostClockStep());
             core->prepare();
         }
 
         void publish()
         {
             using namespace spotykach;
+            status.tempoBpm.store (core->driver().tempo(), std::memory_order_relaxed);
             for (int d = 0; d < 2; ++d)
             {
                 auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
@@ -329,7 +420,7 @@ namespace usp
         }
 
         void process (const float* inL, const float* inR, float* outL, float* outR, int n,
-                      const EngineParams& params, const uint32_t actions)
+                      const EngineParams& params, const uint32_t actions, const HostTransport& host)
         {
             if (! ready)
             {
@@ -340,6 +431,8 @@ namespace usp
 
             usp::gEngineMs = (uint32_t) (engineSamples / 48);
             setTargets (params);
+            hostNow = host;
+            hostFresh = true;
             applyActions (actions);
 
             int off = 0;
@@ -391,6 +484,11 @@ namespace usp
         bool ready = false;
 
         EngineParams target, cur, last;
+        HostTransport hostNow;
+        bool hostFresh = false, clockLocked = false, ppqValid = false;
+        double ppqEst = 0.0;
+        int lastModeParam[2] = { -1, -1 };
+        spotykach::Mode appliedMode[2] = { spotykach::Mode::None, spotykach::Mode::None };
         bool first = true;
 
         int chunkPos = 0;
@@ -412,8 +510,8 @@ namespace usp
     void Engine::prepare (double hostSampleRate, int maxHostBlock) { impl->prepare (hostSampleRate, maxHostBlock); }
     int  Engine::latencySamples() const { return impl->latency(); }
     void Engine::process (const float* inL, const float* inR, float* outL, float* outR, int n,
-                          const EngineParams& params, uint32_t actions)
+                          const EngineParams& params, uint32_t actions, const HostTransport& host)
     {
-        impl->process (inL, inR, outL, outR, n, params, actions);
+        impl->process (inL, inR, outL, outR, n, params, actions, host);
     }
 }

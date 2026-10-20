@@ -35,6 +35,7 @@ public:
     void getStateInformation (juce::MemoryBlock&) override;
     void setStateInformation (const void*, int) override;
 
+    // Last tempo/clock status published by the engine, for the window.
     const usp::EngineStatus& engineStatus() const { return engine.status(); }
 
     // Read by the editor on the message thread. Written only by the audio thread.
@@ -68,6 +69,8 @@ private:
 
     struct DeckPtrs
     {
+        std::atomic<float>* mode = nullptr; std::atomic<float>* pitchSnap = nullptr;
+        std::atomic<float>* sliceOffset = nullptr; std::atomic<float>* envLength = nullptr; std::atomic<float>* window = nullptr;
         std::atomic<float>* position = nullptr; std::atomic<float>* size = nullptr; std::atomic<float>* pitch = nullptr;
         std::atomic<float>* envelope = nullptr; std::atomic<float>* mix = nullptr;  std::atomic<float>* feedback = nullptr;
         std::atomic<float>* button[kNumDeckButtons] = {};
@@ -78,6 +81,10 @@ private:
     std::atomic<float>* pRoute = nullptr;
     std::atomic<float>* pPanSpeed = nullptr;
     std::atomic<float>* pPanRange = nullptr;
+    std::atomic<float>* pTempo = nullptr;
+    std::atomic<float>* pTempoSource = nullptr;
+    std::atomic<float>* pQuantise = nullptr;
+    std::atomic<float>* pClick = nullptr;
     std::atomic<float>* pOutLevel = nullptr;
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outGain;

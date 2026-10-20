@@ -7,7 +7,7 @@ if(APPLE)
 endif()
 
 # The version shown on the About screen comes from here.
-project(UnofficialSpotykach VERSION 0.2.1)
+project(UnofficialSpotykach VERSION 0.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

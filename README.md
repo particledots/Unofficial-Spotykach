@@ -21,10 +21,10 @@ Built with [JUCE](https://juce.com).
 
 ## Status
 
-Milestone 3: both decks of the Spotykach looper in Reel mode (record, play, reverse, trig, record
-from the other deck, position, size, pitch, envelope, mix, feedback), A/B crossfade, the three routing
-modes, and a resizable window. Slice and Drift modes, effects, modulators, tempo sync and MIDI control
-are not in yet.
+Milestone 4: both decks of the Spotykach looper with Reel, Slice and Drift modes (record, play, reverse,
+trig, record from the other deck, position, size, pitch with optional snap, envelope, mix, feedback),
+A/B crossfade, the three routing modes, tempo (internal or host sync), launch quantise and a resizable
+window. Effects, modulators, the sequencer and MIDI control are not in yet.
 
 ## Licence
 
