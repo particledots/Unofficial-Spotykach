@@ -81,6 +81,17 @@ int main()
                     (int) proc.engineStatus().deck[0].empty.load(), (unsigned) proc.engineStatus().underruns.load());
         CHECK (! proc.engineStatus().deck[0].empty.load());
         ed.reset();
+
+        // Closing and reopening the window must restore the last size.
+        for (int w : { 900, 500 })
+        {
+            std::unique_ptr<juce::AudioProcessorEditor> e1 (proc.createEditor());
+            e1->setSize (w, (int) std::lround (w * 620.0 / 640.0));
+            e1.reset();
+            std::unique_ptr<juce::AudioProcessorEditor> e2 (proc.createEditor());
+            std::printf ("  reopen: wanted %d, got %d\n", w, e2->getWidth());
+            CHECK (e2->getWidth() == w);
+        }
     }
     std::printf(fails ? "EDITOR SMOKE TEST FAILED\n" : "EDITOR SMOKE TEST PASSED\n");
     return fails ? 1 : 0;

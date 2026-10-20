@@ -189,16 +189,20 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     about = std::make_unique<AboutPanel>();
     addChildComponent (*about);
 
+    // Read the remembered width FIRST: setResizeLimits() below triggers resized() at size 0, which would
+    // otherwise overwrite the stored value before it is read.
+    int w = (int) proc.apvts.state.getProperty ("uiWidth", kBaseWidth);
+
     // Resizable, fixed aspect ratio. Below 75 % the labels are no longer readable.
     setResizable (true, true);
     setResizeLimits (kBaseWidth * 3 / 4, kBaseHeight * 3 / 4, kBaseWidth * 2, kBaseHeight * 2);
     getConstrainer()->setFixedAspectRatio ((double) kBaseWidth / (double) kBaseHeight);
 
-    int w = (int) proc.apvts.state.getProperty ("uiWidth", kBaseWidth);
     w = juce::jlimit (kBaseWidth * 3 / 4, kBaseWidth * 2, w);
 
     // setSize() calls resized(), so it must come after every child component exists.
     setSize (w, (int) std::lround ((double) w * kBaseHeight / kBaseWidth));
+    sizeRemembering = true;
 
     startTimerHz (15);
     timerCallback();
@@ -326,7 +330,8 @@ void UnofficialSpotykachEditor::resized()
     if (about != nullptr)
         about->setBounds (getLocalBounds());
 
-    proc.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);   // remembered with the session
+    if (sizeRemembering && getWidth() > 0)
+        proc.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);   // remembered with the session
 }
 
 void UnofficialSpotykachEditor::timerCallback()

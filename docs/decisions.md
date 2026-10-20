@@ -1,7 +1,7 @@
 # decisions.md: Spotykach (unofficial)
 
 Running file. Updated at the end of each milestone.
-Last updated: 2026-10-20, M3 built (awaiting your test report).
+Last updated: 2026-10-20, M3 v0.2.1 (window-size fix) built, awaiting retest of items 2 and 9.
 Full reasoning and evidence tags are in SPEC.md; section numbers below refer to it.
 
 ---
@@ -67,7 +67,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | M1 | **Fixed build 0f92d6e (run 39484308800, CI green incl. arch+minimum-OS check). Awaiting your Logic test on both Macs.** Build 8b83286 CRASHED Logic 10.7.8 on the Intel Mac (macOS 12.7.6) when the plug-in window opened: my bug (setSize() in the editor constructor ran resized() before the About panel was created; null dereference). `auval` passed on the Intel Mac for 8b83286 but does not open the window, so it cannot catch this. Superseded builds (do not test): 0904db3, 48e54e3, e6eceaa, 1c047cc, 8b83286. M4 (macOS 26.5, Logic 11.2.2) was not tested on 8b83286 since it would crash the same way. |
 | M1 result | **Accepted.** Build 0f92d6e passed all 6 checks on both Macs. | |
 | M2 | **Accepted 2026-10-20: all 7 checks WORKED on both Macs (build 9a1881e, run 39489948406).** CI: engine_test, arch+minimum-OS check, editor smoke test, auval all passed. Scope: Deck A, Reel mode only (record, play, reverse, position, size, pitch, envelope, mix, feedback, output level). Tested only headlessly: Reel/Deck A with Stereo route; Slice, Drift, Deck B, FX, modulators, external clock are untested. Sound quality unverified. | |
-| M3 | **Built; awaiting your Logic test.** Engine tests pass for both decks, crossfade, Double Mono, record-from-other-deck and trig. Not verified: how Generative Stereo sounds (smoke tested for finite output only), whether Trig sounds right on a playing loop, macOS appearance. |
+| M3 | **Your test (build 9a0b1e8, both Macs): items 1, 3-8 worked ("sounding brilliant"; item 7 "i think so", not confirmed with distinct L/R sources). Item 2/9 FAILED: window size was not remembered. Cause (reproduced headlessly): `setResizeLimits()` in the editor constructor triggers `resized()` at size 0, which overwrote the stored width before it was read. Fixed in v0.2.1 (read first, store only after construction) and the smoke test now closes and reopens the editor and checks the size. Loops are not saved with the project: expected, planned for M8 (D-loop persistence).** Earlier status: built, awaiting test. Engine tests pass for both decks, crossfade, Double Mono, record-from-other-deck and trig. Not verified: how Generative Stereo sounds (smoke tested for finite output only), whether Trig sounds right on a playing loop, macOS appearance. |
 
 ---
 

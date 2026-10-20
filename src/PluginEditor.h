@@ -50,6 +50,7 @@ private:
 
     UnofficialSpotykachProcessor& proc;
     float scale = 1.0f;
+    bool sizeRemembering = false;   // only store the size once construction is finished
 
     juce::Label titleLabel, versionLabel;
     std::array<DeckUI, 2> deckUI;
