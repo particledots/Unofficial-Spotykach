@@ -1,7 +1,7 @@
 # decisions.md: Spotykach (unofficial)
 
 Running file. Updated at the end of each milestone.
-Last updated: 2026-10-20, end of Milestone 0.
+Last updated: 2026-10-20, end of Milestone 1 build (awaiting your test report).
 Full reasoning and evidence tags are in SPEC.md; section numbers below refer to it.
 
 ---
@@ -25,6 +25,10 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | D11 | Use the repo's spelling **"Vlad Lytvynenko"** in credits until someone confirms. | Mine | `CREDITS.md`; manual says "Litvinenko". See Q4. |
 | D12 | CI triggers: **push to `main` and `workflow_dispatch` only.** No `pull_request`, no other branches. | Yours (repo rule) | Note: your Beads workflow also triggers on `master` and `pull_request`; I will not copy that. |
 | D13 | Never enable `USE_DAISYSP_LGPL`. | Mine | Avoids LGPL code entering the build. (SPEC 2.2) |
+| D14 | JUCE pinned to tag **`8.0.16-security`** (the exact tag name upstream uses). Built green on CI at M1. | Mine | (Oct 2026) |
+| D15 | M1 contains **no upstream Spotykach code and no idle engine** (SPEC section 10 said "engine allocated but idle"). Upstream code arrives in M2 with its notices. | Mine | Keeps M1 a pure install/validate test. |
+| D16 | M1 has one parameter, **Output Level** (-60..+6 dB, 20 ms smoothing), to prove automation, smoothing and saved settings before any looper code exists. | Mine | Not part of the final design; may be removed. |
+| D17 | No release, sharing or sale is intended (you said so on 2026-10-20). Ad-hoc signing only; no notarisation. Repo is public for now. | Yours | Answers Q1 and Q3. AGPLv3 and upstream notices still kept. |
 
 ---
 
@@ -32,9 +36,9 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 
 | ID | Question | Blocks? | My suggestion |
 |---|---|---|---|
-| **Q1** | **GitHub repository name and creation.** No Spotykach repo exists and I cannot create one. | **Blocks M1** | `particledots/Unofficial-Spotykach`, **public**, so Actions minutes are free; tell me if you want it private. Steps are in my message to you. After creating it, I need push access via the Claude app's repo connection. |
+| ~~Q1~~ | ANSWERED: repo is `particledots/Unofficial-Spotykach` (public). | - | `particledots/Unofficial-Spotykach`, **public**, so Actions minutes are free; tell me if you want it private. Steps are in my message to you. After creating it, I need push access via the Claude app's repo connection. |
 | Q2 | Default clock source: Internal or Host Sync? | No (M4) | Host Sync. |
-| Q3 | Will you release it publicly? Affects signing and notarisation (ad-hoc signing means users must clear quarantine; notarising needs a paid Apple Developer account, **fee not verified by me**). | No (M8) | Decide before M8. |
+| ~~Q3~~ | ANSWERED: no public release, no sharing, no sale. (Original question: will you release it publicly? Affects signing and notarisation (ad-hoc signing means users must clear quarantine; notarising needs a paid Apple Developer account, **fee not verified by me**). | No (M8) | Decide before M8.) | - |
 | Q4 | Which spelling of Vlad's surname should be credited? | No | Ask Synthux if releasing publicly. |
 | Q5 | Should the Mod out jack and Gate out have any plug-in equivalent (e.g. internal modulator assignable to a plug-in parameter), or are they dropped? | No (M5) | Drop for now. |
 | Q6 | Tapes (6 tapes × 6 tracks on SD): what should this be in a project (e.g. saved with the project, or exportable WAV)? | No (M8) | Save loops inside the plug-in state; discuss at M8. |
@@ -47,8 +51,8 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 
 | Milestone | Status | Notes |
 |---|---|---|
-| M0 | **Done, awaiting your reply** | SPEC.md and this file written. Licence verified. Core compiles on desktop with fixes. Parameter list drafted. Panel mockup published (render not checked by me). |
-| M1 | Not started | Starts after you reply (needs Q1). |
+| M0 | **Done, accepted (no vetoes)** | SPEC.md and this file written. Licence verified. Core compiles on desktop with fixes. Parameter list drafted. Panel mockup published (render not checked by me). |
+| M1 | **Built, CI green (run 39429423787, commit 0904db3). Awaiting your Logic test.** | AU+VST3, universal, macOS 12 target, pass-through, About with version and build id, one smoothed parameter. CI confirmed all steps succeeded. **I cannot read the CI logs or download the artifact from my sandbox (blocked), so I have not seen the architecture list, the minimum-macOS list or the auval output myself.** No error annotation was raised on the auval step, which suggests it passed, but that is inference. The zip contains `AUVAL-RESULT.txt` and `auval.log`: please open `AUVAL-RESULT.txt`. |
 
 ---
 
