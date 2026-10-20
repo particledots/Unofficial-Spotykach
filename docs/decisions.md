@@ -1,7 +1,7 @@
 # decisions.md: Spotykach (unofficial)
 
 Running file. Updated at the end of each milestone.
-Last updated: 2026-10-20, end of Milestone 1 build (awaiting your test report).
+Last updated: 2026-10-20, end of Milestone 2 build (awaiting your test report).
 Full reasoning and evidence tags are in SPEC.md; section numbers below refer to it.
 
 ---
@@ -17,7 +17,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | D3 | Engine runs at **fixed internal 48 kHz**; resample at the plug-in boundary; bypass resampler at 48 kHz host; tick/prepare by counting 96 engine samples. | Mine | Keeps upstream sample-count constants valid, bounds memory/CPU. Alternative (scale all constants) judged more invasive. (SPEC 9.3) |
 | D4 | Whole plug-in licence: **AGPLv3**. Upstream MIT files kept separate with original notices plus `THIRD-PARTY-LICENSES.txt`. | Mine, **needs your agreement before any public release** | JUCE is AGPLv3 or commercial; MIT is compatible with AGPLv3. Not legal advice. (SPEC 2.4) |
 | D5 | Name: **"Unofficial Spotykach"**. README and About say not official, not affiliated with Synthux Academy, and credit Synthux Academy and the designers. | Yours (project rule) / name text mine | (SPEC 2.5) |
-| D6 | **Do not ship `synclock.cpp`.** Write a clean-room tick clock (internal BPM or host tempo, 48 PPQN). | Mine | Header says derived from Paul Messick's 1993-98 toolkit; no licence text in the repo; I cannot resolve its terms. (SPEC 2.3) |
+| D6 | **Do not ship `synclock.cpp`.** Write an independent re-implementation of its interface (not a formal clean-room: I had read the original) as a tick clock (internal BPM or host tempo, 48 PPQN). | Mine | Header says derived from Paul Messick's 1993-98 toolkit; no licence text in the repo; I cannot resolve its terms. (SPEC 2.3) |
 | D7 | Default routing is **Stereo**. | Mine | Firmware leaves `_route` uninitialised; hardware default unknown. Change freely. |
 | D8 | Every underlying parameter is **its own automatable parameter**; no Alt/Tap/Flux/Grit-held knob modes, no pick-up logic. | Mine | Those are front-panel constraints. (SPEC 5.1) |
 | D9 | CV inputs become **automation parameters**; gate in becomes MIDI note + Trig action. No attempt to emulate jacks, calibration or LEDs. | Mine | (SPEC 5.5, 7) |
@@ -30,6 +30,12 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | D16 | M1 has one parameter, **Output Level** (-60..+6 dB, 20 ms smoothing), to prove automation, smoothing and saved settings before any looper code exists. | Mine | Not part of the final design; may be removed. |
 | D18 | Deployment target stays **macOS 12.0** (per your brief). I briefly lowered it to 11.0 on a mistaken reading of your OS version, then reverted. Your Intel Mac is Monterey 12.7.8 with Logic 10.7.8 (confirmed by you 2026-10-20); the M4 has Logic 11.2. CI now fails if the AU or VST3 lacks arm64 or x86_64 or has a minimum other than 12.0. | Mine / confirmed by you | |
 | D17 | No release, sharing or sale is intended (you said so on 2026-10-20). Ad-hoc signing only; no notarisation. Repo is public for now. | Yours | Answers Q1 and Q3. AGPLv3 and upstream notices still kept. |
+
+| D19 | M2 engine: core in zeroed per-instance memory (one calloc arena, about 32 MB per instance for two 42 s source buffers plus delay/slice/track buffers). Upstream patched minimally and every change listed in `third_party/spotykach/NOTICE.md`. | Mine | Firmware relies on zero-initialised statics and the SDRAM singleton. |
+| D20 | M2 resampler: own 32-tap windowed-sinc, 512 phases, linear phase interpolation. Reported plug-in latency is 0 at 48 kHz and about 29-117 host samples at other rates (measured equal to reported within 1 sample). Not tuned for audio quality; **sound quality unknown until you listen**. | Mine | |
+| D21 | M2 buttons REC / PLAY / REV are automatable bool parameters acting on the 0 to 1 edge; the window sends 1 then 0 after 80 ms. | Mine | Lets automation or MIDI-learn trigger them later. |
+| D22 | M2 pitch parameter shows speed and semitones using the firmware mapping (0.5 = 1x, 1.0 = 4x, 0 = stopped), read from `generator.cpp`. Below 0.5 it is linear speed, so the semitone display is not linear in the knob. | Mine | |
+| D23 | CI now runs a blocking headless `engine_test` and a blocking editor smoke test (opens the real editor, renders it, presses the buttons, runs audio at 44.1/48/96 kHz). The smoke test passed on the macOS runner (this resolves the M1 "unverified that it works on a headless runner" proposal). It does not prove the window looks right or that Logic accepts it. | Mine | |
 
 ---
 
@@ -44,7 +50,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | Q5 | Should the Mod out jack and Gate out have any plug-in equivalent (e.g. internal modulator assignable to a plug-in parameter), or are they dropped? | No (M5) | Drop for now. |
 | Q6 | Tapes (6 tapes × 6 tracks on SD): what should this be in a project (e.g. saved with the project, or exportable WAV)? | No (M8) | Save loops inside the plug-in state; discuss at M8. |
 | Q-grit | Grit keeps separate values per mode (Drive/Reduce/Filter): expose all three sets, or one set that follows the current mode? | No (M5) | One set per mode, to match the firmware. |
-| Q-engine | Unknown until read: units of Core's normalised parameters, `set_size` alt flag, Slice mono/stereo toggle. | No | I will read `generator.cpp`/`vox.cpp` before M2 and report. |
+| Q-engine | Slice mode: mono/stereo toggle and `set_size` alt flag still unread. | No (M3+) | Read before Slice work. |
 
 ---
 
@@ -53,7 +59,16 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 | **Done, accepted (no vetoes)** | SPEC.md and this file written. Licence verified. Core compiles on desktop with fixes. Parameter list drafted. Panel mockup published (render not checked by me). |
-| M1 | **Built (commit 1c047cc, run 39433365919, all CI steps green incl. arch+minimum-OS check). Awaiting your Logic test on both Macs: M4 = macOS 26.5 Tahoe + Logic 11.2.2; Intel = macOS 12.7.8 Monterey + Logic 10.7.8 (both stated by you 2026-10-20).** AU+VST3, universal, macOS 12.0 target, pass-through, About with version and build id, one smoothed parameter. I cannot read CI logs or download the artifact from my sandbox, so I rely on CI step results, which now include a check that fails the build if architectures or minimum macOS are wrong. `AUVAL-RESULT.txt` in the zip records the auval result: please open it. Superseded builds (do not test): 0904db3, 48e54e3, e6eceaa. |
+| M1 | **Fixed build 0f92d6e (run 39484308800, CI green incl. arch+minimum-OS check). Awaiting your Logic test on both Macs.** Build 8b83286 CRASHED Logic 10.7.8 on the Intel Mac (macOS 12.7.6) when the plug-in window opened: my bug (setSize() in the editor constructor ran resized() before the About panel was created; null dereference). `auval` passed on the Intel Mac for 8b83286 but does not open the window, so it cannot catch this. Superseded builds (do not test): 0904db3, 48e54e3, e6eceaa, 1c047cc, 8b83286. M4 (macOS 26.5, Logic 11.2.2) was not tested on 8b83286 since it would crash the same way. |
+| M1 result | **Accepted.** Build 0f92d6e passed all 6 checks on both Macs. | |
+| M2 | **Built, CI green (commit 5c2948c, run 39488932105): engine_test, arch+minimum-OS check, editor smoke test, auval all passed on the runner. Not yet tested by you in Logic.** Scope: Deck A, Reel mode only (record, play, reverse, position, size, pitch, envelope, mix, feedback, output level). Tested only headlessly: Reel/Deck A with Stereo route; Slice, Drift, Deck B, FX, modulators, external clock are untested. Sound quality unverified. | |
+
+---
+
+## Lessons / process
+
+- `auval` does not open the plug-in window. A green CI and a passing `auval` do not prove the editor works. A window-open test (a headless editor smoke test in CI, or opening it in Logic) is needed for every milestone that changes the UI. Proposal: add an editor smoke test to CI in M2 (unverified that it works on a headless runner).
+- Intel Mac details: macOS 12.7.6 (crash report), Logic 10.7.8 (build 5817), MacBook Pro (MacBookPro11,2). Your earlier notes said 12.7; the crash report says 12.7.6.
 
 ---
 

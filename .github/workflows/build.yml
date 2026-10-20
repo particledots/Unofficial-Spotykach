@@ -4,6 +4,7 @@ name: Build plugin (macOS)
 on:
   push:
     branches: [ main ]
+    paths-ignore: [ 'docs/**' ]   # docs-only pushes do not rebuild, so the latest build stays the one to test
   workflow_dispatch:
 
 jobs:
