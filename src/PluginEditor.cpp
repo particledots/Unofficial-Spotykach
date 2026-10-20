@@ -73,8 +73,6 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     : AudioProcessorEditor (&p), proc (p),
       levelAttachment (p.apvts, "outLevel", levelSlider)
 {
-    setSize (520, 340);
-
     titleLabel.setText ("UNOFFICIAL SPOTYKACH", juce::dontSendNotification);
     titleLabel.setFont (juce::Font (juce::FontOptions (22.0f).withStyle ("Bold")));
     titleLabel.setColour (juce::Label::textColourId, kAccent);
@@ -109,6 +107,9 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
 
     about = std::make_unique<AboutPanel>();
     addChildComponent (*about);
+
+    // setSize() calls resized(), so it must come after every child component exists.
+    setSize (520, 340);
 
     startTimerHz (15);
     timerCallback();
@@ -153,7 +154,8 @@ void UnofficialSpotykachEditor::resized()
     r.removeFromTop (10);
     statusLabel.setBounds (r.removeFromTop (120));
 
-    about->setBounds (getLocalBounds());
+    if (about != nullptr)
+        about->setBounds (getLocalBounds());
 }
 
 void UnofficialSpotykachEditor::timerCallback()
