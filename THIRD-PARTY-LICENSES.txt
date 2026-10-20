@@ -1,0 +1,61 @@
+Unofficial Spotykach - third-party licences and credits
+=========================================================
+
+Unofficial Spotykach is an UNOFFICIAL community port. It is not a Synthux
+Academy product and is not affiliated with Synthux Academy.
+
+This plug-in as a whole is licensed under the GNU Affero General Public
+License version 3 (see the LICENSE file).
+
+Milestone 1 note: this build does not yet contain any code from the Spotykach
+firmware. The sections below list what the finished plug-in will contain, so
+the notices are in place from the start. They will be updated, with the exact
+file list, in the milestone that adds that code.
+
+
+1. Spotykach firmware (Synthux Academy) - MIT licence
+-----------------------------------------------------
+Source: https://github.com/Synthux-Academy/Spotykach (commit 7da80618c7e051189c575e766ff40594e622e910)
+
+MIT License
+
+Copyright (c) 2026 Synthux Academy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Other copyright notices that appear in files of that repository and will
+travel with the files that use them:
+  - Copyright 2024 Infrasonic Audio LLC (MIT)
+  - Copyright 2026 bleeptools (MIT)
+  - DaisySP, Copyright (c) 2020 Electrosmith, Corp. (MIT), including portions
+    attributed to Emilie Gillet
+
+Spotykach credits (from the project's CREDITS.md): Roey Tsemah (concept, visual
+and hardware design), Vlad Lytvynenko (concept, firmware design), Nick
+Donaldson (electronics design, hardware drivers, bootloader), Rosa Schuurmans
+(FX and LEDs).
+
+
+2. JUCE
+-------
+This plug-in is built with JUCE (https://juce.com), used under the terms of
+the GNU Affero General Public License version 3. JUCE is Copyright (c) Raw
+Material Software Limited. JUCE also bundles the Steinberg VST3 SDK and Apple
+AudioUnit SDK headers under their own licences; see the JUCE repository's
+LICENSE.md.

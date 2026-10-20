@@ -1,0 +1,34 @@
+# Unofficial Spotykach
+
+**Unofficial.** This is a personal, non-commercial port of the Spotykach dual-deck looper
+firmware to an Audio Unit / VST3 plug-in for Logic Pro. It is **not** a Synthux Academy product
+and is **not affiliated with, endorsed by, or supported by Synthux Academy**.
+
+Spotykach is a hardware instrument by **Synthux Academy**. Original firmware:
+<https://github.com/Synthux-Academy/Spotykach> (MIT licence, Copyright (c) 2026 Synthux Academy).
+
+## Credits
+
+Spotykach was designed by (per the upstream `CREDITS.md`):
+
+- Roey Tsemah: concept, visual and hardware design
+- Vlad Lytvynenko: concept, firmware design
+- Nick Donaldson: electronics design, hardware drivers, bootloader
+- Rosa Schuurmans: FX and LEDs
+
+Code from Infrasonic Audio LLC and DaisySP (Electrosmith) is also used in the upstream firmware.
+Built with [JUCE](https://juce.com).
+
+## Status
+
+Milestone 1: an installable shell. It loads in Logic, shows the version on its About screen and
+passes audio through. **There is no looper yet.**
+
+## Licence
+
+The plug-in as a whole is licensed under the **GNU AGPLv3** (see `LICENSE`), because it is built
+with JUCE. Upstream MIT code keeps its own copyright notices; see `THIRD-PARTY-LICENSES.txt`.
+
+## Docs
+
+`docs/SPEC.md` (specification and findings) and `docs/decisions.md` (decisions and open questions).

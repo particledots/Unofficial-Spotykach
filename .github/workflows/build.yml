@@ -1,0 +1,82 @@
+name: Build plugin (macOS)
+
+# Runs ONLY on pushes to main and when started by hand. Never on pull requests or other branches.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    runs-on: macos-14     # Apple silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (universal, macOS 12)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+
+      - name: Build AU + VST3
+        run: cmake --build build --target UnofficialSpotykach_AU UnofficialSpotykach_VST3 -j4
+
+      - name: Ad-hoc sign
+        run: |
+          for b in build/UnofficialSpotykach_artefacts/Release/AU/*.component build/UnofficialSpotykach_artefacts/Release/VST3/*.vst3; do
+            codesign --force --deep -s - "$b"
+          done
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp -R build/UnofficialSpotykach_artefacts/Release/AU/*.component dist/
+          cp -R build/UnofficialSpotykach_artefacts/Release/VST3/*.vst3 dist/
+          cp LICENSE THIRD-PARTY-LICENSES.txt README.md dist/
+          echo "== architectures (expect: x86_64 arm64)"
+          lipo -archs dist/*.component/Contents/MacOS/*
+          lipo -archs dist/*.vst3/Contents/MacOS/*
+          echo "== minimum macOS per slice (expect 12.0)"
+          for a in arm64 x86_64; do
+            echo "-- $a"
+            lipo -thin $a dist/*.component/Contents/MacOS/* -output /tmp/slice_$a
+            otool -l /tmp/slice_$a | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | grep -E "minos|version"
+          done
+          cat > dist/INSTALL.txt <<'TXT'
+          Unofficial Spotykach - install
+          See the instructions in the chat. Short version:
+          1. Delete every old "Unofficial Spotykach" from the Components and VST3 folders (user and system).
+          2. In Terminal:  xattr -dr com.apple.quarantine <path to the unzipped folder>
+          3. Copy the .component to ~/Library/Audio/Plug-Ins/Components/
+             Copy the .vst3      to ~/Library/Audio/Plug-Ins/VST3/
+          4. Logic Pro > Settings > Plug-in Manager > select it > Reset & Rescan Selection.
+          TXT
+
+      # auval is Apple's Audio Unit validator. Whether it works on a CI runner is not
+      # guaranteed, so this step records the result instead of failing the build.
+      - name: auval (Audio Unit validation)
+        continue-on-error: true
+        run: |
+          mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
+          cp -R dist/*.component "$HOME/Library/Audio/Plug-Ins/Components/"
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -a | grep -i Ptdt || echo "NOT LISTED by auval -a"
+          set +e
+          auval -v aumf Spky Ptdt > auval.log 2>&1
+          echo "auval exit code: $?" | tee -a auval.log
+          cat auval.log
+          if grep -q "AU VALIDATION SUCCEEDED" auval.log; then
+            echo "AUVAL RESULT: PASS" | tee dist/AUVAL-RESULT.txt
+          else
+            echo "AUVAL RESULT: FAIL OR NOT RUN (see log)" | tee dist/AUVAL-RESULT.txt
+            exit 1
+          fi
+
+      - name: Zip
+        if: always()
+        run: |
+          cp auval.log dist/ 2>/dev/null || true
+          ditto -c -k --keepParent dist Unofficial-Spotykach-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Unofficial-Spotykach-macOS
+          path: Unofficial-Spotykach-macOS.zip
