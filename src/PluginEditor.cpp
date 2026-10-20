@@ -58,7 +58,7 @@ public:
             "Includes code from Infrasonic Audio LLC and DaisySP (Electrosmith, MIT). "
             "Built with JUCE. This plug-in is licensed under the GNU AGPLv3; see "
             "LICENSE and THIRD-PARTY-LICENSES.txt that came with the download.\n\n"
-            "Milestone 4: both decks with Reel, Slice and Drift modes, routing, A/B crossfade, tempo (internal or host) and launch quantise. FX, modulators, the sequencer and MIDI control are not in yet.",
+            "Milestone 5: both decks with Reel, Slice and Drift modes, Flux and Grit effects, routing, A/B crossfade, tempo (internal or host) and launch quantise. Modulators, the sequencer and MIDI control are not in yet.",
             r.removeFromTop (r.getHeight() - 44), juce::Justification::topLeft, 20);
     }
 
@@ -169,6 +169,62 @@ void UnofficialSpotykachEditor::setupDeck (int d)
     addLabelled (ui.envLength, P::deckId (d, "envLength"),   "Env Length",   juce::Slider::LinearHorizontal);
     addLabelled (ui.window,    P::deckId (d, "window"),      "Window",       juce::Slider::LinearHorizontal);
 
+    // FX page: Flux (delay) and Grit (drive / reduce / filter). Shown instead of the loop knobs when FX is pressed.
+    static const char* fxBase[6] = { "fluxTime", "fluxFeedback", "fluxMix", "gritIntensity", "gritMix", "gritCharacter" };
+    static const char* fxText[6] = { "Flux Time", "Flux Feedback", "Flux Mix", "Grit Intensity", "Grit Mix", "Grit Character" };
+    for (size_t i = 0; i < 6; ++i)
+    {
+        auto& k = ui.fxKnobs[i];
+        k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        k.slider.setColour (juce::Slider::rotarySliderFillColourId, i < 3 ? kGreen : kAccent);
+        addChildComponent (k.slider);
+        k.label.setText (fxText[i], juce::dontSendNotification);
+        k.label.setJustificationType (juce::Justification::centred);
+        k.label.setColour (juce::Label::textColourId, kText);
+        addChildComponent (k.label);
+        k.attachment = std::make_unique<SliderAtt> (proc.apvts, P::deckId (d, fxBase[i]), k.slider);
+    }
+    ui.fxKnobs[0].slider.textFromValueFunction = [this, d] (double v)
+    {
+        const int mode = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId (d, "fluxMode"))->load());
+        if (mode == 1)
+        {
+            static const char* names[8] = { "1/32", "1/16", "1/8T", "1/8", "1/4T", "1/4", "1/2", "1 bar" };
+            return juce::String (names[juce::jlimit (0, 7, juce::roundToInt ((float) v * 7.0f))]);
+        }
+        return juce::String (10 + juce::roundToInt ((float) v * 1990.0f)) + " ms";
+    };
+    ui.fxKnobs[3].slider.textFromValueFunction = [this, d] (double v)
+    {
+        const int mode = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId (d, "gritMode"))->load());
+        if (mode != 2) return juce::String (juce::roundToInt ((float) v * 100.0f)) + " %";
+        if (v < 0.48) return "LP " + juce::String (juce::roundToInt ((float) v * 200.0f)) + " %";
+        if (v > 0.52) return "HP " + juce::String (juce::roundToInt (((float) v - 0.5f) * 200.0f)) + " %";
+        return juce::String ("open");
+    };
+    for (auto* b : { &ui.fluxOn, &ui.gritOn })
+    {
+        b->setColour (juce::ToggleButton::textColourId, kText);
+        b->setColour (juce::ToggleButton::tickColourId, kAccent);
+        addChildComponent (*b);
+    }
+    ui.fluxOnAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, P::deckId (d, "fluxOn"), ui.fluxOn);
+    ui.gritOnAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, P::deckId (d, "gritOn"), ui.gritOn);
+    addCombo (ui.fluxMode, P::deckId (d, "fluxMode"), "Flux Mode");
+    addCombo (ui.gritMode, P::deckId (d, "gritMode"), "Grit Mode");
+    for (auto* cb : { &ui.fluxMode, &ui.gritMode }) { cb->box.setVisible (false); cb->label.setVisible (false); }
+
+    addAndMakeVisible (ui.pageButton);
+    ui.pageButton.setClickingTogglesState (true);
+    ui.pageButton.setColour (juce::TextButton::buttonOnColourId, kAccent);
+    ui.pageButton.setColour (juce::TextButton::textColourOnId, kBg);
+    ui.pageButton.onClick = [this, d]
+    {
+        deckUI[(size_t) d].fxPage = deckUI[(size_t) d].pageButton.getToggleState();
+        showPage (d);
+        resized();
+    };
+
     // With Pitch Snap on, the knob itself jumps to the snapped position while you drag it.
     ui.knobs[2].slider.onValueChange = [this, d]
     {
@@ -189,6 +245,18 @@ void UnofficialSpotykachEditor::setupDeck (int d)
         const float st = 12.0f * std::log2 (speed);
         return juce::String (speed, 2) + "x " + (st >= 0 ? "+" : "") + juce::String (st, snap == 0 ? 1 : 0) + " st";
     };
+}
+
+void UnofficialSpotykachEditor::showPage (int d)
+{
+    auto& ui = deckUI[(size_t) d];
+    const bool fx = ui.fxPage;
+    for (auto& k : ui.knobs)   { k.slider.setVisible (! fx); k.label.setVisible (! fx); }
+    for (auto& k : ui.fxKnobs) { k.slider.setVisible (fx);   k.label.setVisible (fx); }
+    ui.snap.box.setVisible (! fx);   ui.snap.label.setVisible (! fx);
+    for (auto* ls : { &ui.offset, &ui.envLength, &ui.window }) { ls->slider.setVisible (! fx); ls->label.setVisible (! fx); }
+    ui.fluxOn.setVisible (fx);  ui.gritOn.setVisible (fx);
+    ui.fluxMode.box.setVisible (fx);  ui.gritMode.box.setVisible (fx);
 }
 
 UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcessor& p)
@@ -301,6 +369,8 @@ void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, fl
     ui.status.setFont (font (12.0f));
     ui.title.setBounds (head.removeFromLeft (head.getWidth() / 4));
     ui.mode.box.setBounds (head.removeFromLeft (juce::roundToInt (96 * s)));
+    head.removeFromLeft (juce::roundToInt (6 * s));
+    ui.pageButton.setBounds (head.removeFromLeft (juce::roundToInt (44 * s)));
     head.removeFromLeft (juce::roundToInt (8 * s));
     ui.status.setBounds (head);
 
@@ -317,6 +387,16 @@ void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, fl
     r.removeFromTop (juce::roundToInt (4 * s));
     auto row2 = r.removeFromBottom (juce::roundToInt (24 * s));     // snap, offset, env length, window
     r.removeFromBottom (juce::roundToInt (4 * s));
+    {
+        auto fxRow = row2;
+        const int halfFx = fxRow.getWidth() / 2;
+        auto flux = fxRow.removeFromLeft (halfFx).reduced (juce::roundToInt (4 * s), 0);
+        auto grit = fxRow.reduced (juce::roundToInt (4 * s), 0);
+        ui.fluxOn.setBounds (flux.removeFromLeft (juce::roundToInt (70 * s)));
+        ui.fluxMode.box.setBounds (flux.reduced (0, juce::roundToInt (1 * s)));
+        ui.gritOn.setBounds (grit.removeFromLeft (juce::roundToInt (70 * s)));
+        ui.gritMode.box.setBounds (grit.reduced (0, juce::roundToInt (1 * s)));
+    }
     {
         ui.snap.label.setFont (font (12.0f));
         ui.snap.label.setBounds (row2.removeFromLeft (juce::roundToInt (62 * s)));
@@ -338,6 +418,16 @@ void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, fl
     r.removeFromBottom (juce::roundToInt (4 * s));
 
     const int kw = r.getWidth() / 6;
+    const auto knobArea = r;
+    for (size_t i = 0; i < 6; ++i)
+    {
+        auto cell = juce::Rectangle<int> (knobArea.getX() + (int) i * kw, knobArea.getY(), kw, knobArea.getHeight());
+        auto& k = ui.fxKnobs[i];
+        k.label.setFont (font (12.0f));
+        k.label.setBounds (cell.removeFromTop (juce::roundToInt (16 * s)));
+        k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, juce::roundToInt (92 * s), juce::roundToInt (18 * s));
+        k.slider.setBounds (cell);
+    }
     for (auto& k : ui.knobs)
     {
         auto cell = r.removeFromLeft (kw);
@@ -452,6 +542,11 @@ void UnofficialSpotykachEditor::timerCallback()
             ui.lastSnap = snap;
             sl.updateText();
         }
+        const int fm = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId ((int) d, "fluxMode"))->load());
+        const int gm = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId ((int) d, "gritMode"))->load());
+        if (fm != ui.lastFluxMode) { ui.lastFluxMode = fm; ui.fxKnobs[0].slider.updateText(); }
+        if (gm != ui.lastGritMode) { ui.lastGritMode = gm; ui.fxKnobs[3].slider.updateText(); }
+        ui.fxKnobs[5].slider.setEnabled (gm == 2);                  // Grit Character is the filter resonance
         ui.offset.slider.setEnabled (mode == 1);                    // Slice only
         ui.envLength.slider.setEnabled (mode == 2);                 // Drift only
         ui.window.slider.setEnabled (mode == 2);

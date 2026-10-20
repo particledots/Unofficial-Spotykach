@@ -70,6 +70,10 @@ private:
     struct DeckPtrs
     {
         std::atomic<float>* mode = nullptr; std::atomic<float>* pitchSnap = nullptr;
+        std::atomic<float>* fluxOn = nullptr; std::atomic<float>* fluxMode = nullptr; std::atomic<float>* fluxTime = nullptr;
+        std::atomic<float>* fluxFeedback = nullptr; std::atomic<float>* fluxMix = nullptr;
+        std::atomic<float>* gritOn = nullptr; std::atomic<float>* gritMode = nullptr; std::atomic<float>* gritIntensity = nullptr;
+        std::atomic<float>* gritMix = nullptr; std::atomic<float>* gritCharacter = nullptr;
         std::atomic<float>* sliceOffset = nullptr; std::atomic<float>* envLength = nullptr; std::atomic<float>* window = nullptr;
         std::atomic<float>* position = nullptr; std::atomic<float>* size = nullptr; std::atomic<float>* pitch = nullptr;
         std::atomic<float>* envelope = nullptr; std::atomic<float>* mix = nullptr;  std::atomic<float>* feedback = nullptr;

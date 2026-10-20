@@ -46,7 +46,13 @@ private:
         std::array<Knob, 6> knobs;      // position, size, pitch, envelope, mix, feedback
         LabelledCombo mode, snap;
         LabelledSlider offset, envLength, window;
-        int lastSnap = -1;
+        int lastSnap = -1, lastFluxMode = -1, lastGritMode = -1;
+        std::array<Knob, 6> fxKnobs;     // flux time, feedback, mix; grit intensity, mix, character
+        juce::TextButton pageButton { "FX" };
+        juce::ToggleButton fluxOn { "Flux" }, gritOn { "Grit" };
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fluxOnAtt, gritOnAtt;
+        LabelledCombo fluxMode, gritMode;
+        bool fxPage = false;
         juce::Rectangle<float> panel, loopBar;
     };
 
@@ -55,6 +61,7 @@ private:
     void addLabelled (LabelledSlider&, const juce::String& paramId, const juce::String& text, juce::Slider::SliderStyle);
     void addCombo (LabelledCombo&, const juce::String& paramId, const juce::String& text);
     void pulse (const juce::String& paramId);
+    void showPage (int deck);
     void layoutDeck (int deck, juce::Rectangle<int> area, float s);
     juce::Font font (float size, bool bold = false) const;
 

@@ -181,6 +181,11 @@ namespace usp
                 // one-pole smoother on the in/out mix), so they go in directly.
                 c.pitch = t.pitch;
                 c.mix   = t.mix;
+                follow (c.fluxFeedback,  t.fluxFeedback);
+                follow (c.fluxMix,       t.fluxMix);
+                follow (c.gritIntensity, t.gritIntensity);
+                follow (c.gritMix,       t.gritMix);
+                follow (c.gritCharacter, t.gritCharacter);
 
                 auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
                 auto& g = deck.voxs();
@@ -210,6 +215,7 @@ namespace usp
                 }
                 if (changed (l.mix, c.mix))           deck.set_inout_mix (c.mix);
                 if (changed (l.feedback, c.feedback)) deck.set_feedback (c.feedback);
+                applyFx (d, deck, t, c, l);
                 if (changed (l.sliceOffset, t.sliceOffset)) g.set_start_offset_interval (t.sliceOffset);
                 if (changed (l.envLength, t.envLength))     g.set_env_size (t.envLength);
                 if (changed (l.window, t.window))           g.set_win_size (t.window);
@@ -233,6 +239,48 @@ namespace usp
             }
             core->driver().set_tempo_norm (Tempo::abs_to_norm (std::min (250.0f, std::max (20.0f, effectiveBpm()))));
             first = false;
+        }
+
+        // Flux and Grit. The firmware keeps SEPARATE intensity/mix/character values for each Grit mode and
+        // re-reads them on a mode switch (pick-up logic). Here one set of controls applies to all three
+        // modes (decision D32), so each mode is set in turn and the wanted mode is selected last.
+        void applyFx (const int d, spotykach::Deck& deck, const DeckParams& t, const DeckParams& c, DeckParams& l)
+        {
+            using namespace spotykach;
+            auto& fx = deck.fx();
+            auto& flux = fx.flux();
+            auto& grit = fx.grit();
+
+            if (first || t.fluxOn != fluxOnLast[d])   { fluxOnLast[d] = t.fluxOn; fx.set_flux_on (t.fluxOn); }
+            if (first || t.gritOn != gritOnLast[d])   { gritOnLast[d] = t.gritOn; fx.set_grit_on (t.gritOn); }
+            if (first || t.fluxMode != fluxModeLast[d])
+            {
+                fluxModeLast[d] = t.fluxMode;
+                const auto wanted = t.fluxMode == 1 ? Flux::Mode::ClockedDelay : Flux::Mode::FreeDelay;
+                for (int i = 0; i < 2 && flux.mode() != wanted; ++i) flux.switch_mode();
+            }
+            if (changed (l.fluxTime, t.fluxTime))         flux.set_time_norm (t.fluxTime);
+            if (changed (l.fluxFeedback, c.fluxFeedback)) flux.set_fb_norm (c.fluxFeedback);
+            if (changed (l.fluxMix, c.fluxMix))           flux.set_mix_norm (c.fluxMix);
+            // The firmware never passes the tempo to Flux (Flux::set_tempo_bpm has no caller), so its
+            // Clocked mode would stay at 120 BPM. Here it follows the engine tempo (decision D33).
+            flux.set_tempo_bpm (core->driver().tempo());
+
+            const bool gritChanged = changed (l.gritIntensity, c.gritIntensity) | changed (l.gritMix, c.gritMix)
+                                   | changed (l.gritCharacter, c.gritCharacter) | (t.gritMode != gritModeLast[d]);
+            if (gritChanged)
+            {
+                gritModeLast[d] = t.gritMode;
+                const auto wanted = t.gritMode == 1 ? Grit::Mode::Reduce : t.gritMode == 2 ? Grit::Mode::Filter : Grit::Mode::Drive;
+                for (int i = 0; i < 3; ++i)             // visit every mode once, ending where we started
+                {
+                    grit.set_intensity (c.gritIntensity);
+                    grit.set_mix (c.gritMix);
+                    grit.set_character (c.gritCharacter);
+                    grit.switch_mode();
+                }
+                for (int i = 0; i < 3 && grit.mode() != wanted; ++i) grit.switch_mode();
+            }
         }
 
         float effectiveBpm() const
@@ -488,6 +536,8 @@ namespace usp
         bool hostFresh = false, clockLocked = false, ppqValid = false;
         double ppqEst = 0.0;
         int lastModeParam[2] = { -1, -1 };
+        bool fluxOnLast[2] = {}, gritOnLast[2] = {};
+        int fluxModeLast[2] = { -1, -1 }, gritModeLast[2] = { -1, -1 };
         spotykach::Mode appliedMode[2] = { spotykach::Mode::None, spotykach::Mode::None };
         bool first = true;
 

@@ -21,6 +21,11 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
     for (int d = 0; d < 2; ++d)
     {
         auto& p = decks[d];
+        for (auto [ptr, name] : { std::pair { &p.fluxOn, "fluxOn" }, { &p.fluxMode, "fluxMode" }, { &p.fluxTime, "fluxTime" },
+                                  { &p.fluxFeedback, "fluxFeedback" }, { &p.fluxMix, "fluxMix" }, { &p.gritOn, "gritOn" },
+                                  { &p.gritMode, "gritMode" }, { &p.gritIntensity, "gritIntensity" }, { &p.gritMix, "gritMix" },
+                                  { &p.gritCharacter, "gritCharacter" } })
+            *ptr = apvts.getRawParameterValue (deckId (d, name));
         p.mode        = apvts.getRawParameterValue (deckId (d, "mode"));
         p.pitchSnap   = apvts.getRawParameterValue (deckId (d, "pitchSnap"));
         p.sliceOffset = apvts.getRawParameterValue (deckId (d, "sliceOffset"));
@@ -75,6 +80,18 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
             juce::StringArray { "Reel", "Slice", "Drift" }, 0));
         layout.add (std::make_unique<juce::AudioParameterChoice> (id ("pitchSnap"), tag + "Pitch Snap",
             juce::StringArray { "Off", "Steps (octaves, 5ths)", "Semitones" }, 0));
+        layout.add (std::make_unique<juce::AudioParameterBool> (id ("fluxOn"), tag + "Flux On", false));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (id ("fluxMode"), tag + "Flux Mode",
+            juce::StringArray { "Free", "Clocked" }, 0));
+        knob ("fluxTime",     "Flux Time",     0.5f, percentText);
+        knob ("fluxFeedback", "Flux Feedback", 0.5f, percentText);
+        knob ("fluxMix",      "Flux Mix",      0.7f, percentText);
+        layout.add (std::make_unique<juce::AudioParameterBool> (id ("gritOn"), tag + "Grit On", false));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (id ("gritMode"), tag + "Grit Mode",
+            juce::StringArray { "Drive", "Reduce", "Filter" }, 0));
+        knob ("gritIntensity", "Grit Intensity", 0.2f,  percentText);
+        knob ("gritMix",       "Grit Mix",       0.33f, percentText);
+        knob ("gritCharacter", "Grit Character", 0.0f,  percentText);
         knob ("sliceOffset", "Slice Offset", 0.0f, percentText);
         knob ("envLength",   "Envelope Length", 1.0f, percentText);
         knob ("window",      "Window", 0.2f, percentText);
@@ -192,6 +209,16 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
         t.sliceOffset = dp.sliceOffset->load();
         t.envLength   = dp.envLength->load();
         t.window      = dp.window->load();
+        t.fluxOn        = dp.fluxOn->load() > 0.5f;
+        t.fluxMode      = juce::jlimit (0, 1, juce::roundToInt (dp.fluxMode->load()));
+        t.fluxTime      = dp.fluxTime->load();
+        t.fluxFeedback  = dp.fluxFeedback->load();
+        t.fluxMix       = dp.fluxMix->load();
+        t.gritOn        = dp.gritOn->load() > 0.5f;
+        t.gritMode      = juce::jlimit (0, 2, juce::roundToInt (dp.gritMode->load()));
+        t.gritIntensity = dp.gritIntensity->load();
+        t.gritMix       = dp.gritMix->load();
+        t.gritCharacter = dp.gritCharacter->load();
     }
     p.tempoBpm  = pTempo->load();
     p.hostSync  = juce::roundToInt (pTempoSource->load()) == 1;

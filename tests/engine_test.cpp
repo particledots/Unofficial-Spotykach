@@ -307,6 +307,84 @@ static void testModesTempoPitch (double rate, int block)
     }
 }
 
+// Flux (delay) timing in both modes, and Grit.
+static void testFx (double rate, int block)
+{
+    auto impulseRun = [&] (Rig& r, double seconds)
+    {
+        std::vector<float> in = silence (rate, seconds);
+        in[(size_t) (0.2 * rate)] = 0.8f;             // impulse at 0.2 s
+        return r.run (in);
+    };
+    // time of the largest peak after the impulse (skipping the direct sound)
+    auto echoDelay = [&] (const std::vector<float>& o)
+    {
+        const size_t imp = (size_t) (0.2 * rate);
+        size_t first = imp;
+        for (size_t i = imp; i < o.size(); ++i) if (std::abs (o[i]) > 0.1f) { first = i; break; }   // direct sound
+        size_t best = 0; float bv = 0.0f;
+        for (size_t i = first + (size_t) (0.05 * rate); i < o.size(); ++i) if (std::abs (o[i]) > bv) { bv = std::abs (o[i]); best = i; }
+        return std::make_pair ((double) (best - first) / rate, bv);
+    };
+
+    {   // Free mode: time = 0.01 + t * 1.99 s
+        Rig r (rate, block);
+        r.params.deck[0].mix = 0.0f;                  // input only: the effect works on the pass-through
+        r.params.deck[0].fluxOn = true;
+        r.params.deck[0].fluxMode = 0;
+        r.params.deck[0].fluxTime = 0.25f;
+        r.params.deck[0].fluxFeedback = 0.0f;
+        r.params.deck[0].fluxMix = 1.0f;
+        r.run (silence (rate, 3.5));                  // Free mode glides to a new delay time (0.5 s lag): let it settle
+        auto o = impulseRun (r, 1.6);
+        auto e = echoDelay (o);
+        std::printf ("  flux free: echo at %.4f s (expected %.4f), peak %.3f\n", e.first, 0.01 + 0.25 * 1.99, e.second);
+        CHECK (std::abs (e.first - (0.01 + 0.25 * 1.99)) < 0.01, "free echo at %.4f s", e.first);
+        CHECK (e.second > 0.05, "free echo too quiet (%.3f)", e.second);
+    }
+    for (double bpm : { 60.0, 90.0 })   // Clocked: 1/4 note must follow the ENGINE tempo, not a fixed 120 BPM
+    {
+        Rig r (rate, block);
+        r.params.hostSync = false;
+        r.params.tempoBpm = (float) bpm;
+        r.params.deck[0].mix = 0.0f;
+        r.params.deck[0].fluxOn = true;
+        r.params.deck[0].fluxMode = 1;
+        r.params.deck[0].fluxTime = 5.0f / 7.0f;      // index 5 = 1/4 note
+        r.params.deck[0].fluxFeedback = 0.0f;
+        r.params.deck[0].fluxMix = 1.0f;
+        r.run (silence (rate, 0.3));
+        auto o = impulseRun (r, 1.9);
+        auto e = echoDelay (o);
+        const double want = 60.0 / bpm;
+        std::printf ("  flux clocked @%.0f BPM: echo at %.4f s (expected %.4f)\n", bpm, e.first, want);
+        CHECK (std::abs (e.first - want) < 0.012, "clocked echo at %.4f s, expected %.4f", e.first, want);
+    }
+    {   // Grit: each mode changes the sound, stays finite and bounded; off is a clean pass-through.
+        const auto tone = sine (rate, 0.6, 220.0f, 0.6f);
+        std::vector<float> off;
+        for (int mode = -1; mode <= 2; ++mode)       // -1 = grit off
+        {
+            Rig r (rate, block);
+            r.params.deck[0].mix = 0.0f;
+            r.params.deck[0].gritOn = mode >= 0;
+            r.params.deck[0].gritMode = mode < 0 ? 0 : mode;
+            r.params.deck[0].gritIntensity = 1.0f;
+            r.params.deck[0].gritMix = 1.0f;
+            r.params.deck[0].gritCharacter = 0.5f;
+            r.run (silence (rate, 0.3));
+            auto o = r.run (tone);
+            CHECK (finiteAndBounded (o), "grit mode %d not finite", mode);
+            if (mode < 0) { off = o; continue; }
+            std::vector<float> diff (o.size());
+            for (size_t i = 0; i < o.size(); ++i) diff[i] = o[i] - off[i];
+            const double dv = rms (diff, o.size() / 3, o.size());
+            std::printf ("  grit mode %d: rms of difference from clean %.4f\n", mode, dv);
+            CHECK (dv > 0.01, "grit mode %d did not change the sound (difference rms %.5f)", mode, dv);
+        }
+    }
+}
+
 static void testInstancesAreIndependent()
 {
     Rig a (44100.0, 512), b (96000.0, 137);
@@ -356,6 +434,7 @@ int main (int argc, char** argv)
             testRecordPlay (rate, block);
             if (block == 64 || block == 512) testDecks (rate, block);
             if (block == 64 || block == 512) testModesTempoPitch (rate, block);
+            if (block == 64 || block == 512) testFx (rate, block);
         }
 
     std::printf ("two independent instances\n");

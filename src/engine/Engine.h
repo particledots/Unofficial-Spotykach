@@ -30,6 +30,18 @@ namespace usp
         float envLength   = 1.0f; // 0..1 (Drift only)
         float window      = 0.2f; // 0..1 (Drift only: grain size)
         int   pitchSnap   = 0;   // 0 = off, 1 = firmware steps (-24 -12 -7 0 +7 +12 +24 st), 2 = semitones
+
+        // Flux (delay) and Grit (drive / reduce / filter); defaults are the firmware's.
+        bool  fluxOn = false;
+        int   fluxMode = 0;      // 0 = Free (10 ms to 2 s), 1 = Clocked (note divisions of the tempo)
+        float fluxTime = 0.5f;
+        float fluxFeedback = 0.5f;
+        float fluxMix = 0.7f;
+        bool  gritOn = false;
+        int   gritMode = 0;      // 0 = Drive, 1 = Reduce, 2 = Filter
+        float gritIntensity = 0.2f;
+        float gritMix = 0.33f;
+        float gritCharacter = 0.0f;   // Filter mode only (resonance)
     };
 
     enum EngineRoute : int { kRouteDoubleMono = 0, kRouteStereo = 1, kRouteGenerativeStereo = 2 };
