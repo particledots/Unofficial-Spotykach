@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
 
-# Universal binary + macOS 12 floor. These must be set BEFORE project().
+# Universal binary + macOS 11 floor. These must be set BEFORE project().
 if(APPLE)
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "")
-  set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "")
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
 endif()
 
 # The version shown on the About screen comes from here.

@@ -289,7 +289,7 @@ Inputs and outputs for now: main stereo input, left = input A, right = input B (
 ### 9.2 Framework: JUCE, built with CMake on GitHub Actions
 
 - **JUCE 8.0.16** (latest 8.x; 12 Oct 2026; its changelog adds malformed-string protection [read]), with **8.0.6 as fallback** (what your Beads project pins). JUCE 9.0.4 also exists and bundles the MIT-licensed VST3 SDK, but I have not built with it, so I recommend staying on 8.x for now. I could not read your Beads CI status, so "proven" means only that Beads uses this setup and you have told me those builds worked.
-- JUCE supports a macOS 10.11 deployment target [read: README], so macOS 12 and universal binaries are fine on its side. Whether the CI produces a clean arm64 + x86_64 build is for the CI to show.
+- JUCE supports a macOS 10.11 deployment target [read: README], so macOS 11 and universal binaries are fine on its side. Whether the CI produces a clean arm64 + x86_64 build is for the CI to show.
 - Licence consequence: **AGPLv3 for the whole plug-in** (section 2.4), or a paid commercial JUCE licence (unverified terms).
 - I did not evaluate other frameworks this session (e.g. iPlug2) and have not checked their licences. Switching would cost you a proven setup for no benefit I can demonstrate.
 
@@ -310,7 +310,7 @@ I will build it this way unless you tell me otherwise (decision D3).
 - Memory per instance, from source constants: 2 source buffers × 42 s × 48 000 frames × 8 bytes ≈ 32.3 MB, plus ≈ 3.8 MB of delay buffers: **about 36 MB**. Allocated once, never on the audio thread.
 
 ### 9.5 CI (all building on GitHub Actions)
-- macOS runner, `cmake` with `CMAKE_OSX_ARCHITECTURES="arm64;x86_64"` and `CMAKE_OSX_DEPLOYMENT_TARGET=12.0`.
+- macOS runner, `cmake` with `CMAKE_OSX_ARCHITECTURES="arm64;x86_64"` and `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`.
 - **Triggers: `push` on `main` and `workflow_dispatch` only.** No pull requests, no other branches. (Your Beads workflow also triggers on `pull_request` and on `master`; I will not copy that.)
 - Headless engine test, then AU + VST3 build, ad-hoc signing, packaging with `THIRD-PARTY-LICENSES.txt` and install instructions.
 - I will try to run `auval` on the runner, but whether the runner can do that is **untested**; your `auval`/Logic validation remains the real test.

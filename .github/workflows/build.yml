@@ -12,8 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure (universal, macOS 12)
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Configure (universal, macOS 11)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 
       - name: Build AU + VST3
         run: cmake --build build --target UnofficialSpotykach_AU UnofficialSpotykach_VST3 -j4
@@ -33,12 +33,25 @@ jobs:
           echo "== architectures (expect: x86_64 arm64)"
           lipo -archs dist/*.component/Contents/MacOS/*
           lipo -archs dist/*.vst3/Contents/MacOS/*
-          echo "== minimum macOS per slice (expect 12.0)"
+          echo "== minimum macOS per slice (expect 11.0)"
           for a in arm64 x86_64; do
             echo "-- $a"
             lipo -thin $a dist/*.component/Contents/MacOS/* -output /tmp/slice_$a
             otool -l /tmp/slice_$a | grep -A4 -E "LC_BUILD_VERSION|LC_VERSION_MIN" | grep -E "minos|version"
           done
+          # Fail the build (so a green tick means it was checked) if anything is missing.
+          for bin in dist/*.component/Contents/MacOS/* dist/*.vst3/Contents/MacOS/*; do
+            archs=$(lipo -archs "$bin")
+            case "$archs" in *arm64*) ;; *) echo "FAIL: no arm64 in $bin ($archs)"; exit 1;; esac
+            case "$archs" in *x86_64*) ;; *) echo "FAIL: no x86_64 in $bin ($archs)"; exit 1;; esac
+            for a in arm64 x86_64; do
+              lipo -thin $a "$bin" -output /tmp/chk_$a
+              minos=$(otool -l /tmp/chk_$a | awk '/LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/{f=1} f && !d && ($1=="minos"||$1=="version"){print $2; d=1}')
+              echo "CHECK $bin $a minos=$minos"
+              [ "$minos" = "11.0" ] || { echo "FAIL: minimum macOS is '$minos', expected 11.0"; exit 1; }
+            done
+          done
+          echo "ARCH+MINOS CHECK PASSED (arm64 + x86_64, macOS 11.0) for AU and VST3"
           cat > dist/INSTALL.txt <<'TXT'
           Unofficial Spotykach - install
           See the instructions in the chat. Short version:

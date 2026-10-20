@@ -28,6 +28,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | D14 | JUCE pinned to tag **`8.0.16-security`** (the exact tag name upstream uses). Built green on CI at M1. | Mine | (Oct 2026) |
 | D15 | M1 contains **no upstream Spotykach code and no idle engine** (SPEC section 10 said "engine allocated but idle"). Upstream code arrives in M2 with its notices. | Mine | Keeps M1 a pure install/validate test. |
 | D16 | M1 has one parameter, **Output Level** (-60..+6 dB, 20 ms smoothing), to prove automation, smoothing and saved settings before any looper code exists. | Mine | Not part of the final design; may be removed. |
+| D18 | **Deployment target lowered from macOS 12 to macOS 11.0** (project brief said 12). CI now fails if the AU or VST3 lacks arm64 or x86_64 or has a minimum other than 11.0. | Mine, on your requirement that it run on the Intel Mac (Logic 10.7.8; macOS version 11.2 vs the 12.7 in your notes still to be confirmed) | Same floor as your Beads build. |
 | D17 | No release, sharing or sale is intended (you said so on 2026-10-20). Ad-hoc signing only; no notarisation. Repo is public for now. | Yours | Answers Q1 and Q3. AGPLv3 and upstream notices still kept. |
 
 ---
@@ -52,7 +53,7 @@ Full reasoning and evidence tags are in SPEC.md; section numbers below refer to 
 | Milestone | Status | Notes |
 |---|---|---|
 | M0 | **Done, accepted (no vetoes)** | SPEC.md and this file written. Licence verified. Core compiles on desktop with fixes. Parameter list drafted. Panel mockup published (render not checked by me). |
-| M1 | **Built, CI green (run 39429423787, commit 0904db3). Awaiting your Logic test.** | AU+VST3, universal, macOS 12 target, pass-through, About with version and build id, one smoothed parameter. CI confirmed all steps succeeded. **I cannot read the CI logs or download the artifact from my sandbox (blocked), so I have not seen the architecture list, the minimum-macOS list or the auval output myself.** No error annotation was raised on the auval step, which suggests it passed, but that is inference. The zip contains `AUVAL-RESULT.txt` and `auval.log`: please open `AUVAL-RESULT.txt`. |
+| M1 | **Rebuilt for macOS 11 floor; see commit below. Awaiting your Logic test on both Macs.** (First build: run 39429423787, commit 0904db3, macOS 12 floor: superseded, do not test.) | AU+VST3, universal, macOS 12 target, pass-through, About with version and build id, one smoothed parameter. CI confirmed all steps succeeded. **I cannot read the CI logs or download the artifact from my sandbox (blocked), so I have not seen the architecture list, the minimum-macOS list or the auval output myself.** No error annotation was raised on the auval step, which suggests it passed, but that is inference. The zip contains `AUVAL-RESULT.txt` and `auval.log`: please open `AUVAL-RESULT.txt`. |
 
 ---
 
