@@ -173,6 +173,42 @@ int main()
             CHECK (e2->getWidth() == w);
         }
     }
+
+    {   // MIDI channel routing through the real processor: Deck B on channel 3 triggers Deck B's loop (and only that)
+        UnofficialSpotykachProcessor proc;
+        proc.setPlayConfigDetails (2, 2, 48000.0, 512);
+        proc.prepareToPlay (48000.0, 512);
+        auto setParam = [&] (const char* id, float real) { auto* p = proc.apvts.getParameter (id); p->setValueNotifyingHost (p->convertTo0to1 (real)); };
+        setParam ("route", 0.0f);          // Double Mono: Deck A left, Deck B right
+        setParam ("b_mix", 1.0f); setParam ("mix", 1.0f);
+        setParam ("crossfade", 0.5f);
+        setParam ("b_midiChannel", 3.0f);
+        CHECK (std::abs (proc.apvts.getRawParameterValue ("b_midiChannel")->load() - 3.0f) < 0.01f);
+        juce::AudioBuffer<float> b (2, 512);
+        juce::MidiBuffer none;
+        double ph = 0;
+        auto runTone = [&] (int blocks, juce::MidiBuffer& mb)
+        {
+            double rmsL = 0, rmsR = 0;
+            for (int k = 0; k < blocks; ++k)
+            {
+                for (int i = 0; i < 512; ++i) { const float v = 0.4f * (float) std::sin (ph); ph += 2.0 * 3.14159265358979 * 220.0 / 48000.0; b.setSample (0, i, v); b.setSample (1, i, v); }
+                proc.processBlock (b, k == 0 ? mb : none);
+                for (int i = 0; i < 512; ++i) { rmsL += b.getSample (0, i) * b.getSample (0, i); rmsR += b.getSample (1, i) * b.getSample (1, i); }
+            }
+            return std::pair<double, double> { std::sqrt (rmsL / (blocks * 512.0)), std::sqrt (rmsR / (blocks * 512.0)) };
+        };
+        auto press = [&] (const char* id) { setParam (id, 1.0f); runTone (1, none); setParam (id, 0.0f); runTone (1, none); };
+        press ("b_record"); runTone (100, none); press ("b_record");     // ~1 s on Deck B only (stopped afterwards)
+        press ("b_play"); runTone (20, none); press ("b_play");            // start and stop so nothing is playing
+        runTone (40, none);
+        auto quiet = runTone (20, none);
+        juce::MidiBuffer ch3; ch3.addEvent (juce::MidiMessage::noteOn (3, 60, (juce::uint8) 100), 0);
+        auto hit = runTone (40, ch3);
+        juce::MidiBuffer ch1; ch1.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+        std::printf ("midi channel 3: idle rms L %.4f R %.4f; after note on ch 3: L %.4f R %.4f\n", quiet.first, quiet.second, hit.first, hit.second);
+        CHECK (hit.second > 0.02);        // Deck B (right) plays
+    }
     std::printf(fails ? "EDITOR SMOKE TEST FAILED\n" : "EDITOR SMOKE TEST PASSED\n");
     return fails ? 1 : 0;
 }

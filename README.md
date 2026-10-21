@@ -31,9 +31,9 @@ Saving loops with the project is not in yet.
 
 Needs Logic to deliver MIDI to the plug-in: in Logic Pro, MIDI-controlled effects are loaded in the
 **Instrument slot of a Software Instrument track** (they are listed with the AU MIDI-controlled effects),
-with the audio source chosen in the plug-in's **Side Chain** menu. (Not yet verified with this plug-in.)
+with the audio source chosen in the plug-in's **Side Chain** menu. (Confirmed with this plug-in on Logic Pro 10.7.8 and 11.2.2.)
 
-Channels: Deck A listens on channel 1 and Deck B on channel 2 by default (changeable on the MIDI page).
+Channels: Deck A listens on channel 1 and Deck B on channel 2 by default (changeable on the MIDI page). In Logic's track Inspector keep **MIDI In Channel** on All and use **MIDI Out Channel** to choose the channel the plug-in receives (MIDI In Channel filters notes out).
 
 - **Note on** (deck's channel): triggers the loop, pitched by (note - 60) semitones, +-5 octaves. The pitch applies to that
   triggered pass, as on the hardware.
