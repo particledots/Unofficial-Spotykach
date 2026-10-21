@@ -23,8 +23,10 @@ jobs:
 
       - name: Loop file tests (WAV in/out, links and search, loop hand-over to the audio thread, trims)
         run: |
-          cmake --build build --target loop_test -j4
-          ./build/loop_test
+          set -o pipefail
+          # Failing lines are repeated as annotations so they can be read without the full log.
+          cmake --build build --target loop_test -j4 2>&1 | tee loop_build.log || { grep -E "error" loop_build.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
+          ./build/loop_test 2>&1 | tee loop_test.log || { grep -E "FAIL" loop_test.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
 
       - name: Build AU + VST3
         run: cmake --build build --target UnofficialSpotykach_AU UnofficialSpotykach_VST3 -j4
