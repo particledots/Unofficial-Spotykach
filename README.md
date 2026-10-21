@@ -21,9 +21,10 @@ Built with [JUCE](https://juce.com).
 
 ## Status
 
-Milestone 5: both decks of the Spotykach looper with Reel, Slice and Drift modes, Flux (delay) and Grit
-(drive, reduce, filter) effects, A/B crossfade, the three routing modes, tempo (internal or host sync),
-launch quantise and a resizable window. Modulators, the sequencer and MIDI control are not in yet.
+Milestone 6: both decks of the Spotykach looper with Reel, Slice and Drift modes, Flux (delay) and Grit
+(drive, reduce, filter) effects, two modulators that can be patched to a destination, a trigger
+sequencer per deck, A/B crossfade, the three routing modes, tempo (internal, host sync or tap),
+launch quantise and a resizable window. MIDI control is not in yet.
 
 ## Licence
 

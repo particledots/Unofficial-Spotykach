@@ -7,7 +7,7 @@ if(APPLE)
 endif()
 
 # The version shown on the About screen comes from here.
-project(UnofficialSpotykach VERSION 0.4.0)
+project(UnofficialSpotykach VERSION 0.5.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,7 +34,8 @@ FetchContent_Declare(DaisySP
   GIT_TAG 599511b740f8f3a9b8db72a0642aa45b8a23c3a3
   GIT_SUBMODULES "")   # never fetch the LGPL submodule
 FetchContent_MakeAvailable(DaisySP)
-target_compile_options(DaisySP PRIVATE -w)
+# -fwrapv: DaisySP's WhiteNoise is a linear congruential generator that relies on signed integer wrap-around.
+target_compile_options(DaisySP PRIVATE -w -fwrapv)
 
 file(GLOB SPK_CORE_SRC CONFIGURE_DEPENDS
   third_party/spotykach/src/core/*.cpp
@@ -48,7 +49,7 @@ target_include_directories(spotykach_core PUBLIC
 # The upstream code relies on headers being pulled in transitively by libDaisy; force them.
 target_compile_options(spotykach_core PRIVATE
   "SHELL:-include cstdint" "SHELL:-include cstddef" "SHELL:-include cmath"
-  "SHELL:-include cstring" "SHELL:-include algorithm" -w)
+  "SHELL:-include cstring" "SHELL:-include algorithm" -w -fwrapv)
 target_link_libraries(spotykach_core PUBLIC DaisySP)
 set_target_properties(spotykach_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

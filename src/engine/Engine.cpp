@@ -142,19 +142,74 @@ namespace usp
             }
         }
 
-        // ---- The firmware reads its CV inputs once per audio block; with nothing patched they read zero.
-        void applyIdleCvInputs()
+        // ---- Modulators and the CV inputs they replace --------------------------------------------------
+        // The firmware reads its CV inputs once per block (nothing patched = zero). Upstream the modulator
+        // outputs only reach the Mod-out jack (app.cpp calls Modulator::process once per 48 kHz DAC sample);
+        // here each modulator output is summed into the input its Target names (decision D37).
+        void applyModulators()
         {
             using namespace spotykach;
-            for (auto ref : { Deck::A, Deck::B })
+            float posMod[2] = {}, sizeMod[2] = {}, mixMod[2] = {}, pitchMod[2] = {}, xfadeMod = 0.0f;
+
+            for (int m = 0; m < 2; ++m)
             {
-                auto& deck = core->deck (ref);
-                deck.inout_mix_mod_in (0.0f);
-                deck.voxs().set_start_mod (0.0f);
-                deck.voxs().set_size_mod (0.0f);
-                deck.voxs().pitch_speed_mod_in (1.0f);   // 1.0 = no V/Oct offset
+                const auto& t = target.mod[m];
+                auto& l = lastMod[m];
+                auto& mod = core->mod (m == 0 ? Deck::A : Deck::B);
+
+                if (first || t.type != l.type)
+                {
+                    l.type = t.type;
+                    if (t.type == kModFollow) mod.set_type (Modulator::Type::Follow);
+                    else
+                    {
+                        mod.set_type (Modulator::Type::LFO);
+                        mod.set_lfo_type (t.type == kModSaw ? LFO::Type::saw : t.type == kModSquare ? LFO::Type::square
+                                        : t.type == kModRandom ? LFO::Type::random : LFO::Type::sine);
+                    }
+                    l.cycle = -1.0f;
+                }
+                if (first || t.sync != l.sync || std::abs (t.cycle - l.cycle) > 1.0e-5f)
+                {
+                    l.sync = t.sync;
+                    l.cycle = t.cycle;
+                    // Modulator::set_speed_norm indexes its division table with (1 - norm) * 9 - 1, which is -1 (invalid) at
+                    // norm = 1 when synced; keep just below 1.
+                    mod.set_speed_norm (t.sync ? std::min (t.cycle, 0.999f) : t.cycle, t.sync);
+                }
+                if (first || std::abs (t.glow - l.glow) > 1.0e-5f)
+                {
+                    l.glow = t.glow;
+                    mod.set_amp_norm (t.glow);
+                }
+
+                float out = 0.0f;
+                if (t.type == kModFollow) mod.process (out);
+                else for (int i = 0; i < kChunk; ++i) mod.process (out);   // one call per 48 kHz sample, as on the hardware
+                if (! std::isfinite (out)) out = 0.0f;
+                out = std::min (1.0f, std::max (0.0f, out));
+                status.modValue[m].store (out, std::memory_order_relaxed);
+
+                const int tg = t.target;
+                if (tg == 0 || tg >= kModTargetCount) continue;
+                if (tg == 11) { xfadeMod += out; continue; }
+                const int d = (tg - 1) / 5, what = (tg - 1) % 5;
+                if (what == 0 || what == 2) posMod[d] += out;
+                if (what == 1 || what == 2) sizeMod[d] += out;
+                if (what == 3) pitchMod[d] += out;
+                if (what == 4) mixMod[d] += out;
             }
-            core->mix_mod_in (0.0f);
+
+            for (int d = 0; d < 2; ++d)
+            {
+                auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
+                deck.inout_mix_mod_in (std::min (1.0f, mixMod[d]));
+                deck.voxs().set_start_mod (std::min (1.0f, posMod[d]));
+                deck.voxs().set_size_mod (std::min (1.0f, sizeMod[d]));
+                // The pitch input is a speed multiplier (1.0 = none). Unipolar modulator: 0..1 = 0..+1 octave.
+                deck.voxs().pitch_speed_mod_in (std::exp2 (std::min (1.0f, pitchMod[d])));
+            }
+            core->mix_mod_in (std::min (1.0f, xfadeMod));
         }
 
         // ---- Parameters -------------------------------------------------------------------------------
@@ -381,13 +436,21 @@ namespace usp
                 if ((bits & kActionPlay) != 0)    play (false);
                 if ((bits & kActionReverse) != 0) play (true);
 
+                if ((bits & kActionSeqArm) != 0)
+                {
+                    // Alt + Trig on the hardware: arm, or stop if already armed. Starts on the next launch-quantise
+                    // tick unless the quantise is finer than a quarter note (then on the first recorded Trig).
+                    auto& t = deck.track();
+                    if (t.is_armed()) t.disarm(); else t.arm (! core->driver().is_key_sub_quarter());
+                }
+                if ((bits & kActionSeqClear) != 0) deck.clear_sequence();
+
                 if ((bits & kActionTrig) != 0)
                 {
-                    // Same as CoreUI::_trigger(): a speed event with no V/Oct offset (speed 1).
+                    // The Trig button is the firmware's TRIG PAD (core.ui.pads.cpp): a plain event, so the deck's
+                    // pitch input (here: a modulator patched to Pitch) is honoured. The gate-in path would pin the
+                    // speed to 1 (decision D38).
                     auto e = make_event();
-                    e.discont = false;
-                    e.p3 = 1.0f;
-                    e.p3_on = true;
                     deck.trigger (&e);
                 }
             }
@@ -419,7 +482,7 @@ namespace usp
         void beginChunk()
         {
             usp::gEngineMs = (uint32_t) (engineSamples / 48);
-            applyIdleCvInputs();
+            applyModulators();
             applyParams();
             core->driver().tick (hostClockStep());
             core->prepare();
@@ -440,6 +503,9 @@ namespace usp
                 s.empty.store (deck.is_empty(), std::memory_order_relaxed);
                 s.loopSeconds.store ((float) deck.buffer().rec_size() / (float) kEngineRate, std::memory_order_relaxed);
                 s.playhead.store (deck.norm_playhead_at (0), std::memory_order_relaxed);
+                s.seqArmed.store (deck.track().is_armed(), std::memory_order_relaxed);
+                s.seqRecording.store (deck.track().is_recording(), std::memory_order_relaxed);
+                s.seqHasData.store (! deck.track().is_empty(), std::memory_order_relaxed);
             }
         }
 
@@ -532,6 +598,7 @@ namespace usp
         bool ready = false;
 
         EngineParams target, cur, last;
+        ModParams lastMod[2] = { { -1, -1.0f, false, -1.0f, 0 }, { -1, -1.0f, false, -1.0f, 0 } };
         HostTransport hostNow;
         bool hostFresh = false, clockLocked = false, ppqValid = false;
         double ppqEst = 0.0;

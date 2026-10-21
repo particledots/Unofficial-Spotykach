@@ -55,12 +55,16 @@ public:
     // Deck B uses a "b_" prefix.
     static juce::String deckId (int deck, const juce::String& base) { return deck == 0 ? base : "b_" + base; }
 
-    static constexpr int kNumDeckButtons = 5;   // record, play, reverse, trig, recInternal
+    static constexpr int kNumDeckButtons = 7;   // record, play, reverse, trig, recInternal, seqArm, seqClear
     static const char* deckButtonBase (int i)
     {
-        static const char* names[kNumDeckButtons] = { "record", "play", "reverse", "trig", "recInternal" };
+        static const char* names[kNumDeckButtons] = { "record", "play", "reverse", "trig", "recInternal", "seqArm", "seqClear" };
         return names[i];
     }
+
+    // Modulator parameter id: "modA_cycle", "modB_glow", ...
+    static juce::String modId (int mod, const juce::String& base) { return juce::String (mod == 0 ? "modA_" : "modB_") + base; }
+    static const juce::StringArray& modTargetNames();
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
@@ -81,6 +85,9 @@ private:
         bool was[kNumDeckButtons] = {};            // audio thread only
     };
     DeckPtrs decks[2];
+    struct ModPtrs { std::atomic<float>* type = nullptr; std::atomic<float>* cycle = nullptr; std::atomic<float>* sync = nullptr;
+                     std::atomic<float>* glow = nullptr; std::atomic<float>* target = nullptr; };
+    ModPtrs mods[2];
     std::atomic<float>* pCrossfade = nullptr;
     std::atomic<float>* pRoute = nullptr;
     std::atomic<float>* pPanSpeed = nullptr;

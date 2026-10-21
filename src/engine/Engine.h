@@ -44,6 +44,20 @@ namespace usp
         float gritCharacter = 0.0f;   // Filter mode only (resonance)
     };
 
+    // One of the two modulators. Upstream they only drive the Mod-out jack; here each one can be patched to
+    // a destination (decision D37, not firmware behaviour). Glow is the amount.
+    enum ModType : int { kModFollow = 0, kModSine = 1, kModSaw = 2, kModSquare = 3, kModRandom = 4 };
+    // Target index: 0 = none, 1..5 = Deck A (Position, Size, Position+Size, Pitch, Mix), 6..10 = Deck B (same), 11 = Crossfade.
+    constexpr int kModTargetCount = 12;
+    struct ModParams
+    {
+        int   type   = kModSine;
+        float cycle  = 0.3f;     // speed (LFO rate, or follower attack/release time)
+        bool  sync   = false;    // LFO rate follows the tempo (note divisions)
+        float glow   = 0.5f;     // amount, 0..1
+        int   target = 0;
+    };
+
     enum EngineRoute : int { kRouteDoubleMono = 0, kRouteStereo = 1, kRouteGenerativeStereo = 2 };
 
     struct EngineParams
@@ -57,6 +71,7 @@ namespace usp
         bool  hostSync  = false;     // follow the host's tempo and beat position
         int   launchQuantise = 1;    // index 0..16 into the firmware's list (1/16, 1/4, 2/4 ... 16/4)
         float clickLevel = 0.0f;     // 0..1
+        ModParams mod[2];            // 0 = Mod A (follows Deck A's output), 1 = Mod B (follows Deck B's output)
     };
 
     struct HostTransport
@@ -75,7 +90,9 @@ namespace usp
         kActionPlay           = 1u << 1,   // play forward / stop
         kActionReverse        = 1u << 2,   // play reverse / stop
         kActionTrig           = 1u << 3,   // trigger (restarts playback; the firmware's gate input)
-        kActionRecordInternal = 1u << 4    // arm / stop recording from the OTHER deck's output
+        kActionRecordInternal = 1u << 4,   // arm / stop recording from the OTHER deck's output
+        kActionSeqArm         = 1u << 5,   // trigger sequencer: arm (then each Trig is recorded) / stop recording
+        kActionSeqClear       = 1u << 6    // trigger sequencer: clear
     };
     constexpr uint32_t deckAction (int deck, EngineAction a) { return (uint32_t) a << (deck * 8); }
 
@@ -88,6 +105,9 @@ namespace usp
         std::atomic<bool>     empty { true };
         std::atomic<float>    loopSeconds { 0.0f };
         std::atomic<float>    playhead { 0.0f };       // 0..1 through the loop
+        std::atomic<bool>     seqArmed { false };      // trigger sequencer is armed (waiting for or recording Trigs)
+        std::atomic<bool>     seqRecording { false };
+        std::atomic<bool>     seqHasData { false };    // a trigger sequence is stored
     };
 
     struct EngineStatus
@@ -95,6 +115,7 @@ namespace usp
         DeckStatus deck[2];
         std::atomic<bool>     hostLocked { false };    // clock is locked to the host's beat
         std::atomic<float>    tempoBpm { 120.0f };     // tempo the engine is actually using
+        std::atomic<float>    modValue[2] { { 0.0f }, { 0.0f } };   // current modulator outputs, 0..1
         std::atomic<uint32_t> underruns { 0 };         // output frames the resampler could not supply
     };
 

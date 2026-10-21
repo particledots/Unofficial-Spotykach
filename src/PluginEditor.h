@@ -15,7 +15,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int kBaseWidth = 640, kBaseHeight = 712;
+    static constexpr int kBaseWidth = 640, kBaseHeight = 736;
 
 private:
     class AboutPanel;
@@ -53,7 +53,20 @@ private:
         std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fluxOnAtt, gritOnAtt;
         LabelledCombo fluxMode, gritMode;
         bool fxPage = false;
+        double clearDownAt = 0.0;        // when CLEAR was pressed (hold 1.5 s, as on the hardware); 0 = not held
+        bool clearFired = false;
         juce::Rectangle<float> panel, loopBar;
+    };
+    struct ModUI
+    {
+        juce::Label title;
+        LabelledCombo type, target;
+        LabelledSlider cycle, glow;
+        juce::ToggleButton sync { "Sync" };
+        std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> syncAtt;
+        int lastType = -1;
+        bool lastSync = false;
+        juce::Rectangle<float> meter;
     };
 
     void timerCallback() override;
@@ -62,6 +75,9 @@ private:
     void addCombo (LabelledCombo&, const juce::String& paramId, const juce::String& text);
     void pulse (const juce::String& paramId);
     void showPage (int deck);
+    void setupMod (int mod);
+    void showGlobalPage();
+    void tap();
     void layoutDeck (int deck, juce::Rectangle<int> area, float s);
     juce::Font font (float size, bool bold = false) const;
 
@@ -72,6 +88,10 @@ private:
     juce::Label titleLabel, versionLabel;
     std::array<DeckUI, 2> deckUI;
     LabelledSlider crossfade, panSpeed, panRange, outLevel, tempo, click;
+    std::array<ModUI, 2> modUI;
+    juce::TextButton setupTab { "SETUP" }, modsTab { "MODS" }, tapButton { "TAP" };
+    bool modsPage = false;
+    std::vector<double> tapTimes;     // message thread only
     LabelledCombo tempoSource, quantise;
     juce::Label routeLabel;
     juce::ComboBox routeBox;

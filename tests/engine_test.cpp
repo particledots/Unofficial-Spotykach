@@ -1,6 +1,11 @@
 // Unofficial Spotykach - own code, GNU AGPLv3 (see LICENSE).
 // Headless test of the engine wrapper (no JUCE, no audio device). Run by CI; a failure fails the build.
 #include "../src/engine/PitchMap.h"
+#include "../src/engine/ModMap.h"
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include "lfo.h"
 #include "Engine.h"
 
 #include <atomic>
@@ -385,6 +390,153 @@ static void testFx (double rate, int block)
     }
 }
 
+
+// Modulators: rate, sync, follower, each target, and the trigger sequencer.
+static void testModulatorsAndSequencer (double rate, int block)
+{
+    const uint32_t recA = deckAction (0, kActionRecord), playA = deckAction (0, kActionPlay);
+    const auto tone = sine (rate, 1.0, 330.0, 0.5f);
+    auto loopPlaying = [&] (Rig& r, int mode = 0)
+    {
+        r.params.deck[0].mix = 1.0f;
+        r.params.deck[0].mode = mode;
+        r.run (silence (rate, 0.3));
+        r.run (silence (rate, 0.05), recA);
+        r.run (tone);
+        r.run (silence (rate, 0.05), recA);
+        r.run (silence (rate, 0.05), playA);
+        r.run (silence (rate, 0.5));
+    };
+    // Counts upward crossings of 0.5 in the modulator output, sampled every 10 ms.
+    auto crossings = [&] (Rig& r, double seconds)
+    {
+        int n = 0; float prev = r.engine.status().modValue[0].load();
+        for (int i = 0; i < (int) (seconds * 100); ++i)
+        {
+            r.run (silence (rate, 0.01));
+            const float v = r.engine.status().modValue[0].load();
+            if (prev < 0.5f && v >= 0.5f) ++n;
+            prev = v;
+        }
+        return n;
+    };
+
+    {   // free-running LFO: cycle 0.5 -> curved 0.5007 -> 0.01 + 0.5007 * 11.99 = 6.01 Hz
+        Rig r (rate, block);
+        r.params.mod[0].type = kModSine; r.params.mod[0].cycle = 0.5f; r.params.mod[0].glow = 1.0f;
+        r.run (silence (rate, 0.3));
+        const int n = crossings (r, 5.0);
+        std::printf ("  LFO free: %d cycles in 5 s (expect ~30)\n", n);
+        CHECK (std::abs (n - 30) <= 2, "free LFO counted %d cycles in 5 s, expected ~30", n);
+    }
+    {   // tempo-synced LFO: cycle 0.5 -> division index 3 -> 4 sixteenths = a quarter note -> 2 Hz at 120 BPM
+        Rig r (rate, block);
+        r.params.tempoBpm = 120.0f;
+        r.params.mod[0].type = kModSine; r.params.mod[0].cycle = 0.5f; r.params.mod[0].glow = 1.0f; r.params.mod[0].sync = true;
+        r.run (silence (rate, 0.6));
+        const int n = crossings (r, 5.0);
+        r.params.tempoBpm = 60.0f;
+        r.run (silence (rate, 0.6));
+        const int n2 = crossings (r, 5.0);
+        std::printf ("  LFO synced: %d cycles in 5 s at 120 BPM (expect ~10), %d at 60 BPM (expect ~5)\n", n, n2);
+        CHECK (std::abs (n - 10) <= 2, "synced LFO counted %d at 120 BPM, expected ~10", n);
+        CHECK (std::abs (n2 - 5) <= 2, "synced LFO counted %d at 60 BPM, expected ~5", n2);
+        r.params.mod[0].cycle = 1.0f;   // the upstream division table must not be indexed out of range
+        auto o = r.run (silence (rate, 0.5));
+        CHECK (finiteAndBounded (o), "synced LFO at cycle 1.0 is not finite");
+    }
+    {   // follower: moves with the deck's output
+        Rig r (rate, block);
+        r.params.mod[0].type = kModFollow; r.params.mod[0].cycle = 0.3f; r.params.mod[0].glow = 1.0f;
+        loopPlaying (r);
+        r.run (silence (rate, 0.3));
+        const float live = r.engine.status().modValue[0].load();
+        std::printf("  follower: %.3f while the loop plays\n", live);
+        CHECK (live > 0.02f, "follower stayed at %.4f while the loop plays", live);
+    }
+    {   // Pitch target: a square LFO alternates 0 and +1 octave, so the loop's pitch alternates
+        Rig r (rate, block);
+        r.params.mod[0].type = kModSquare; r.params.mod[0].cycle = 0.05f; r.params.mod[0].glow = 1.0f; r.params.mod[0].target = 4;
+        loopPlaying (r);
+        int lo = 1 << 30, hi = 0;
+        for (int i = 0; i < 40; ++i)
+        {
+            auto o = r.run (silence (rate, 0.1));
+            if (i < 12) continue;
+            const int zc = zeroCrossings (o, 0, o.size());
+            lo = std::min (lo, zc); hi = std::max (hi, zc);
+        }
+        std::printf ("  pitch target: zero crossings per 100 ms range %d..%d\n", lo, hi);
+        CHECK (hi > 1.6 * lo, "pitch modulation not audible (crossings %d..%d)", lo, hi);
+    }
+    {   // Crossfade target: square LFO flips between Deck A (playing) and Deck B (empty)
+        Rig r (rate, block);
+        r.params.mod[0].type = kModSquare; r.params.mod[0].cycle = 0.05f; r.params.mod[0].glow = 1.0f; r.params.mod[0].target = 11;
+        loopPlaying (r);
+        double lo = 1e9, hi = 0;
+        for (int i = 0; i < 40; ++i)
+        {
+            auto o = r.run (silence (rate, 0.1));
+            if (i < 12) continue;
+            const double v = rms (o, 0, o.size());
+            lo = std::min (lo, v); hi = std::max (hi, v);
+        }
+        std::printf ("  crossfade target: rms per 100 ms range %.4f..%.4f\n", lo, hi);
+        CHECK (hi > 0.05 && lo < hi * 0.2, "crossfade modulation not audible (rms %.4f..%.4f)", lo, hi);
+    }
+    {   // every type x every target stays finite, in all modes, with both modulators running
+        Rig r (rate, block);
+        loopPlaying (r, 1);
+        for (int type = 0; type < 5; ++type)
+            for (int tg = 0; tg < kModTargetCount; ++tg)
+            {
+                for (int m = 0; m < 2; ++m)
+                {
+                    r.params.mod[m].type = type; r.params.mod[m].target = (tg + m * 5) % kModTargetCount;
+                    r.params.mod[m].glow = 1.0f; r.params.mod[m].cycle = 0.6f; r.params.mod[m].sync = (tg & 1) != 0;
+                }
+                auto o = r.run (silence (rate, 0.1));
+                CHECK (finiteAndBounded (o), "output not finite for modulator type %d target %d", type, tg);
+            }
+        for (int mode = 0; mode < 3; ++mode)
+        {
+            r.params.deck[0].mode = mode;
+            auto o = r.run (silence (rate, 0.3));
+            CHECK (finiteAndBounded (o), "output not finite with modulators in mode %d", mode);
+        }
+    }
+    {   // Trigger sequencer on Deck A (Slice): arm, record three Trigs, stop, play back, clear.
+        Rig r (rate, block);
+        r.params.tempoBpm = 120.0f;
+        r.params.deck[0].mix = 1.0f;
+        r.params.deck[0].mode = 1;
+        r.run (silence (rate, 0.3));
+        r.run (silence (rate, 0.05), recA);
+        r.run (tone);
+        r.run (silence (rate, 0.05), recA);
+        r.run (silence (rate, 0.3));
+        const auto& s = r.engine.status().deck[0];
+        const uint32_t arm = deckAction (0, kActionSeqArm), trig = deckAction (0, kActionTrig), clear = deckAction (0, kActionSeqClear);
+        CHECK (! s.seqHasData.load(), "sequence present before recording");
+        r.run (silence (rate, 0.05), arm);
+        CHECK (s.seqArmed.load(), "sequencer did not arm");
+        r.run (silence (rate, 1.0));          // armed: recording starts on the next launch-quantise tick
+        for (int i = 0; i < 3; ++i) { r.run (silence (rate, 0.05), trig); r.run (silence (rate, 0.45)); }
+        r.run (silence (rate, 0.05), arm);     // stop
+        r.run (silence (rate, 2.5));
+        std::printf ("  sequencer: armed=%d recording=%d hasData=%d\n", (int) s.seqArmed.load(), (int) s.seqRecording.load(), (int) s.seqHasData.load());
+        CHECK (! s.seqArmed.load() && ! s.seqRecording.load(), "sequencer still armed/recording after stop");
+        CHECK (s.seqHasData.load(), "no sequence was stored");
+        r.run (silence (rate, 0.05), playA);
+        auto o = r.run (silence (rate, 3.0));
+        CHECK (finiteAndBounded (o), "sequence playback not finite");
+        CHECK (rms (o, 0, o.size()) > 0.01, "sequence playback is silent");
+        r.run (silence (rate, 0.05), clear);
+        r.run (silence (rate, 0.2));
+        CHECK (! s.seqHasData.load(), "sequence still stored after clear");
+    }
+}
+
 static void testInstancesAreIndependent()
 {
     Rig a (44100.0, 512), b (96000.0, 137);
@@ -400,6 +552,16 @@ static void testInstancesAreIndependent()
     std::printf ("  instances: A rms %.4f, B rms %.6f\n", la, lb);
     CHECK (la > 0.05, "instance A should play its loop (rms %.4f)", la);
     CHECK (lb < 1e-4, "instance B should be silent (rms %.6f): state is shared between instances", lb);
+}
+
+static void testModMap()
+{
+    for (int i = 0; i <= 100; ++i)
+    {
+        const float n = (float) i / 100.0f;
+        CHECK (std::abs (usp::modCurve (n) - spotykach::curved_value (n)) < 1.0e-6f, "modCurve(%.2f) differs from upstream curved_value", n);
+    }
+    CHECK (usp::modDivisionIndex (0.0f) == 8 && usp::modDivisionIndex (0.5f) == 3 && usp::modDivisionIndex (1.0f) == 0, "division index mapping");
 }
 
 static void testPitchMap()
@@ -420,6 +582,7 @@ static void testPitchMap()
 int main (int argc, char** argv)
 {
     testPitchMap();
+    testModMap();
     const double rates[] = { 22050.0, 44100.0, 48000.0, 88200.0, 96000.0, 192000.0 };
     const int blocks[]   = { 1, 64, 137, 512, 4096 };
 
@@ -435,6 +598,7 @@ int main (int argc, char** argv)
             if (block == 64 || block == 512) testDecks (rate, block);
             if (block == 64 || block == 512) testModesTempoPitch (rate, block);
             if (block == 64 || block == 512) testFx (rate, block);
+            if (block == 64 || block == 512) testModulatorsAndSequencer (rate, block);
         }
 
     std::printf ("two independent instances\n");

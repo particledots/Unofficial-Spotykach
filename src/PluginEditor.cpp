@@ -3,6 +3,7 @@
 // Third-party notices: THIRD-PARTY-LICENSES.txt
 #include "PluginEditor.h"
 #include "engine/PitchMap.h"
+#include "engine/ModMap.h"
 
 namespace
 {
@@ -58,7 +59,7 @@ public:
             "Includes code from Infrasonic Audio LLC and DaisySP (Electrosmith, MIT). "
             "Built with JUCE. This plug-in is licensed under the GNU AGPLv3; see "
             "LICENSE and THIRD-PARTY-LICENSES.txt that came with the download.\n\n"
-            "Milestone 5: both decks with Reel, Slice and Drift modes, Flux and Grit effects, routing, A/B crossfade, tempo (internal or host) and launch quantise. Modulators, the sequencer and MIDI control are not in yet.",
+            "Milestone 6: both decks with Reel, Slice and Drift modes, Flux and Grit effects, two modulators that you can patch to a destination, a trigger sequencer per deck, routing, A/B crossfade, tempo (internal, host or tap) and launch quantise. MIDI control is not in yet.",
             r.removeFromTop (r.getHeight() - 44), juce::Justification::topLeft, 20);
     }
 
@@ -136,13 +137,32 @@ void UnofficialSpotykachEditor::setupDeck (int d)
     ui.status.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (ui.status);
 
-    static const char* btnText[UnofficialSpotykachProcessor::kNumDeckButtons] = { "REC", "PLAY", "REV", "TRIG", "REC OTHER" };
+    static const char* btnText[UnofficialSpotykachProcessor::kNumDeckButtons] = { "REC", "PLAY", "REV", "TRIG", "FROM", "SEQ", "CLEAR" };
+    static const char* btnTip[UnofficialSpotykachProcessor::kNumDeckButtons] = {
+        "Record from the plug-in input (press again to stop)", "Play / stop", "Play in reverse / stop",
+        "Trigger the loop with the current settings",
+        "Record the other deck's output into this deck (press again to stop)",
+        "Trigger sequencer: press to arm, then tap TRIG to record a rhythm; press SEQ again to stop recording",
+        "Hold for 1.5 seconds to clear the trigger sequence" };
     for (int i = 0; i < UnofficialSpotykachProcessor::kNumDeckButtons; ++i)
     {
         auto& b = ui.buttons[(size_t) i];
-        b.setButtonText (i == 4 ? juce::String ("REC FROM ") + (d == 0 ? "B" : "A") : juce::String (btnText[i]));
+        b.setButtonText (i == 4 ? juce::String ("FROM ") + (d == 0 ? "B" : "A") : juce::String (btnText[i]));
+        b.setTooltip (btnTip[i]);
         const auto id = UnofficialSpotykachProcessor::deckId (d, UnofficialSpotykachProcessor::deckButtonBase (i));
-        b.onClick = [this, id] { pulse (id); };
+        if (i == 6)
+        {
+            // CLEAR needs a 1.5 s hold (the firmware's Hold<1500>); the timer fires it.
+            b.onStateChange = [this, d]
+            {
+                auto& u = deckUI[(size_t) d];
+                if (u.buttons[6].isDown()) { if (u.clearDownAt == 0.0) { u.clearDownAt = juce::Time::getMillisecondCounterHiRes(); u.clearFired = false; } }
+                else u.clearDownAt = 0.0;
+            };
+        }
+        else
+            b.onClick = [this, id] { pulse (id); };
+        if (i == 5) b.setColour (juce::TextButton::buttonOnColourId, kRec);
         addAndMakeVisible (b);
     }
 
@@ -259,6 +279,78 @@ void UnofficialSpotykachEditor::showPage (int d)
     ui.fluxMode.box.setVisible (fx);  ui.gritMode.box.setVisible (fx);
 }
 
+void UnofficialSpotykachEditor::setupMod (int m)
+{
+    using P = UnofficialSpotykachProcessor;
+    auto& ui = modUI[(size_t) m];
+    ui.title.setText (m == 0 ? "MOD A" : "MOD B", juce::dontSendNotification);
+    ui.title.setColour (juce::Label::textColourId, kAccent);
+    addChildComponent (ui.title);
+    addCombo (ui.type,   P::modId (m, "type"),   "Type");
+    addCombo (ui.target, P::modId (m, "target"), "Target");
+    addLabelled (ui.cycle, P::modId (m, "cycle"), "Rate", juce::Slider::LinearHorizontal);
+    addLabelled (ui.glow,  P::modId (m, "glow"),  "Glow", juce::Slider::LinearHorizontal);
+    ui.glow.slider.setColour (juce::Slider::trackColourId, kGreen);
+    ui.type.label.setVisible (false);
+    ui.sync.setColour (juce::ToggleButton::textColourId, kText);
+    ui.sync.setColour (juce::ToggleButton::tickColourId, kAccent);
+    addChildComponent (ui.sync);
+    ui.syncAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, P::modId (m, "sync"), ui.sync);
+    ui.sync.setTooltip ("Lock the LFO rate to the tempo (note lengths instead of Hz)");
+    ui.target.box.setTooltip ("Where this modulator's output is sent. Glow is the amount.");
+    ui.glow.slider.setTooltip ("Amount (and, for Follow, the input gain)");
+
+    ui.cycle.slider.textFromValueFunction = [this, m] (double v)
+    {
+        const int type = juce::roundToInt (proc.apvts.getRawParameterValue (UnofficialSpotykachProcessor::modId (m, "type"))->load());
+        const bool sync = proc.apvts.getRawParameterValue (UnofficialSpotykachProcessor::modId (m, "sync"))->load() > 0.5f;
+        if (type == usp::kModFollow)
+        {
+            const float ms = usp::modFollowReleaseMs ((float) v);
+            return ms < 1000.0f ? juce::String (juce::roundToInt (ms)) + " ms" : juce::String (ms / 1000.0f, 1) + " s";
+        }
+        if (sync) return juce::String (usp::modDivisionName (usp::modDivisionIndex ((float) v)));
+        return juce::String (usp::modRateHz ((float) v), 2) + " Hz";
+    };
+}
+
+void UnofficialSpotykachEditor::showGlobalPage()
+{
+    const bool mods = modsPage;
+    for (auto* c : std::initializer_list<juce::Component*> { &routeLabel, &routeBox, &panSpeed.slider, &panSpeed.label, &panRange.slider,
+                                                             &panRange.label, &tempo.slider, &tempo.label, &tempoSource.box, &tempoSource.label,
+                                                             &quantise.box, &quantise.label, &click.slider, &click.label, &outLevel.slider,
+                                                             &outLevel.label, &tapButton })
+        c->setVisible (! mods);
+    for (auto& ui : modUI)
+        for (auto* c : std::initializer_list<juce::Component*> { &ui.title, &ui.type.box, &ui.target.box, &ui.target.label, &ui.cycle.slider,
+                                                                 &ui.cycle.label, &ui.glow.slider, &ui.glow.label, &ui.sync })
+            c->setVisible (mods);
+    setupTab.setToggleState (! mods, juce::dontSendNotification);
+    modsTab.setToggleState (mods, juce::dontSendNotification);
+    repaint();
+}
+
+// Tap tempo: the average of the last few intervals; a pause of more than 2.5 s starts a new count.
+// Tapping switches the tempo source to Internal (a tapped tempo would otherwise be overridden by the host).
+void UnofficialSpotykachEditor::tap()
+{
+    const double now = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    if (! tapTimes.empty() && now - tapTimes.back() > 2.5) tapTimes.clear();
+    tapTimes.push_back (now);
+    if (tapTimes.size() > 5) tapTimes.erase (tapTimes.begin());
+    if (tapTimes.size() < 2) return;
+    const double interval = (tapTimes.back() - tapTimes.front()) / (double) (tapTimes.size() - 1);
+    const float bpm = juce::jlimit (20.0f, 250.0f, (float) (60.0 / interval));
+    if (auto* src = proc.apvts.getParameter ("tempoSource")) { src->beginChangeGesture(); src->setValueNotifyingHost (0.0f); src->endChangeGesture(); }
+    if (auto* t = proc.apvts.getParameter ("tempo"))
+    {
+        t->beginChangeGesture();
+        t->setValueNotifyingHost (t->convertTo0to1 (bpm));
+        t->endChangeGesture();
+    }
+}
+
 UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcessor& p)
     : AudioProcessorEditor (&p), proc (p)
 {
@@ -284,6 +376,19 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     addLabelled (click, "click", "Click", juce::Slider::LinearHorizontal);
     addCombo (tempoSource, "tempoSource", "Source");
     addCombo (quantise, "quantise", "Quantise");
+    setupMod (0);
+    setupMod (1);
+    addAndMakeVisible (tapButton);
+    tapButton.setTooltip ("Tap the tempo (sets Source to Internal)");
+    tapButton.onClick = [this] { tap(); };
+    for (auto* b : { &setupTab, &modsTab })
+    {
+        b->setColour (juce::TextButton::buttonOnColourId, kAccent);
+        b->setColour (juce::TextButton::textColourOnId, kBg);
+        addAndMakeVisible (*b);
+    }
+    setupTab.onClick = [this] { modsPage = false; showGlobalPage(); resized(); };
+    modsTab.onClick  = [this] { modsPage = true;  showGlobalPage(); resized(); };
 
     routeLabel.setText ("Routing", juce::dontSendNotification);
     routeLabel.setColour (juce::Label::textColourId, kText);
@@ -302,6 +407,7 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
 
     about = std::make_unique<AboutPanel>();
     addChildComponent (*about);
+    showGlobalPage();
 
     // Read the remembered width FIRST: setResizeLimits() below triggers resized() at size 0, which would
     // otherwise overwrite the stored value before it is read.
@@ -349,6 +455,15 @@ void UnofficialSpotykachEditor::paint (juce::Graphics& g)
         }
     }
 
+    if (modsPage)
+        for (size_t m = 0; m < 2; ++m)
+        {
+            g.setColour (kPanel);
+            g.fillRoundedRectangle (modUI[m].meter, 3.0f * scale);
+            g.setColour (kGreen);
+            g.fillRoundedRectangle (modUI[m].meter.withWidth (modUI[m].meter.getWidth() * juce::jlimit (0.0f, 1.0f, st.modValue[m].load())), 3.0f * scale);
+        }
+
     g.setColour (kBg);
     g.fillRoundedRectangle (meterArea, 3.0f * scale);
     g.setColour (meterLevel > 0.99f ? juce::Colours::red : kAccent);
@@ -377,7 +492,7 @@ void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, fl
     r.removeFromTop (juce::roundToInt (4 * s));
     auto btnRow = r.removeFromTop (juce::roundToInt (28 * s));
     const int gap = juce::roundToInt (6 * s);
-    const int bw = (btnRow.getWidth() - 4 * gap) / 5;
+    const int bw = (btnRow.getWidth() - 6 * gap) / 7;
     for (auto& b : ui.buttons)
     {
         b.setBounds (btnRow.removeFromLeft (bw));
@@ -467,37 +582,77 @@ void UnofficialSpotykachEditor::resized()
         ls.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, juce::roundToInt ((float) textW * s), juce::roundToInt (20 * s));
         ls.slider.setBounds (row);
     };
-    setLs (crossfade, r.removeFromTop (rowH), 100, 110);
-    r.removeFromTop (juce::roundToInt (4 * s));
-
-    auto rowR = r.removeFromTop (rowH);
-    routeLabel.setFont (font (13.0f));
-    routeLabel.setBounds (rowR.removeFromLeft (juce::roundToInt (56 * s)));
-    routeBox.setBounds (rowR.removeFromLeft (juce::roundToInt (136 * s)));
-    rowR.removeFromLeft (juce::roundToInt (10 * s));
-    const int halfR = rowR.getWidth() / 2;
-    setLs (panSpeed, rowR.removeFromLeft (halfR), 62, 52);
-    setLs (panRange, rowR, 62, 52);
-    r.removeFromTop (juce::roundToInt (4 * s));
-
-    auto rowT = r.removeFromTop (rowH);
-    setLs (tempo, rowT.removeFromLeft (rowT.getWidth() * 45 / 100), 56, 74);
-    rowT.removeFromLeft (juce::roundToInt (10 * s));
-    for (auto* cb : { &tempoSource, &quantise })
     {
-        auto cell = rowT.removeFromLeft (cb == &tempoSource ? rowT.getWidth() * 42 / 100 : rowT.getWidth());
-        cb->label.setFont (font (13.0f));
-        cb->label.setBounds (cell.removeFromLeft (juce::roundToInt ((cb == &tempoSource ? 44.0f : 62.0f) * s)));
-        cb->box.setBounds (cell.reduced (0, juce::roundToInt (1 * s)));
-        rowT.removeFromLeft (juce::roundToInt (8 * s));
+        auto rowX = r.removeFromTop (rowH);
+        auto tabs = rowX.removeFromRight (juce::roundToInt (150 * s));
+        setupTab.setBounds (tabs.removeFromLeft (juce::roundToInt (72 * s)));
+        tabs.removeFromLeft (juce::roundToInt (6 * s));
+        modsTab.setBounds (tabs);
+        rowX.removeFromRight (juce::roundToInt (10 * s));
+        setLs (crossfade, rowX, 100, 110);
     }
-    r.removeFromTop (juce::roundToInt (4 * s));
+    r.removeFromTop (juce::roundToInt (6 * s));
 
-    auto rowO = r.removeFromTop (rowH);
-    setLs (click, rowO.removeFromLeft (rowO.getWidth() * 42 / 100), 44, 52);
-    rowO.removeFromLeft (juce::roundToInt (10 * s));
-    setLs (outLevel, rowO, 86, 64);
-    r.removeFromTop (juce::roundToInt (8 * s));
+    // The page area below the crossfade row holds either the setup rows or the two modulators.
+    auto page = r.removeFromTop (juce::roundToInt (122 * s));
+    {
+        auto p = page;
+        auto rowR = p.removeFromTop (rowH);
+        routeLabel.setFont (font (13.0f));
+        routeLabel.setBounds (rowR.removeFromLeft (juce::roundToInt (56 * s)));
+        routeBox.setBounds (rowR.removeFromLeft (juce::roundToInt (136 * s)));
+        rowR.removeFromLeft (juce::roundToInt (10 * s));
+        const int halfR = rowR.getWidth() / 2;
+        setLs (panSpeed, rowR.removeFromLeft (halfR), 62, 52);
+        setLs (panRange, rowR, 62, 52);
+        p.removeFromTop (juce::roundToInt (4 * s));
+
+        auto rowT = p.removeFromTop (rowH);
+        setLs (tempo, rowT.removeFromLeft (rowT.getWidth() * 40 / 100), 56, 74);
+        rowT.removeFromLeft (juce::roundToInt (6 * s));
+        tapButton.setBounds (rowT.removeFromLeft (juce::roundToInt (46 * s)).reduced (0, juce::roundToInt (1 * s)));
+        rowT.removeFromLeft (juce::roundToInt (10 * s));
+        for (auto* cb : { &tempoSource, &quantise })
+        {
+            auto cell = rowT.removeFromLeft (cb == &tempoSource ? rowT.getWidth() * 42 / 100 : rowT.getWidth());
+            cb->label.setFont (font (13.0f));
+            cb->label.setBounds (cell.removeFromLeft (juce::roundToInt ((cb == &tempoSource ? 44.0f : 62.0f) * s)));
+            cb->box.setBounds (cell.reduced (0, juce::roundToInt (1 * s)));
+            rowT.removeFromLeft (juce::roundToInt (8 * s));
+        }
+        p.removeFromTop (juce::roundToInt (4 * s));
+
+        auto rowO = p.removeFromTop (rowH);
+        setLs (click, rowO.removeFromLeft (rowO.getWidth() * 42 / 100), 44, 52);
+        rowO.removeFromLeft (juce::roundToInt (10 * s));
+        setLs (outLevel, rowO, 86, 64);
+    }
+    {
+        auto p = page;
+        for (size_t m = 0; m < 2; ++m)
+        {
+            auto& ui = modUI[m];
+            auto row1 = p.removeFromTop (rowH);
+            ui.title.setFont (font (13.0f, true));
+            ui.title.setBounds (row1.removeFromLeft (juce::roundToInt (54 * s)));
+            ui.type.box.setBounds (row1.removeFromLeft (juce::roundToInt (84 * s)).reduced (0, juce::roundToInt (1 * s)));
+            row1.removeFromLeft (juce::roundToInt (10 * s));
+            ui.sync.setBounds (row1.removeFromRight (juce::roundToInt (60 * s)));
+            setLs (ui.cycle, row1, 40, 78);
+            p.removeFromTop (juce::roundToInt (2 * s));
+
+            auto row2 = p.removeFromTop (rowH);
+            ui.target.label.setFont (font (13.0f));
+            ui.target.label.setBounds (row2.removeFromLeft (juce::roundToInt (54 * s)));
+            ui.target.box.setBounds (row2.removeFromLeft (juce::roundToInt (140 * s)).reduced (0, juce::roundToInt (1 * s)));
+            row2.removeFromLeft (juce::roundToInt (10 * s));
+            ui.meter = row2.removeFromRight (juce::roundToInt (58 * s)).reduced (0, juce::roundToInt (9 * s)).toFloat();
+            row2.removeFromRight (juce::roundToInt (8 * s));
+            setLs (ui.glow, row2, 40, 52);
+            p.removeFromTop (juce::roundToInt (10 * s));
+        }
+    }
+    r.removeFromTop (juce::roundToInt (6 * s));
     meterArea = r.removeFromTop (juce::roundToInt (10 * s)).toFloat();
 
     if (about != nullptr)
@@ -522,7 +677,32 @@ void UnofficialSpotykachEditor::timerCallback()
         else if (s.playing.load())   state = s.reverse.load() ? "PLAYING (rev)" : "PLAYING";
         else if (s.empty.load())     state = "EMPTY";
         else                         state = "STOPPED";
-        deckUI[d].status.setText (state + "   " + juce::String (s.loopSeconds.load(), 2) + " s", juce::dontSendNotification);
+        const char* seq = s.seqRecording.load() ? "   SEQ REC" : s.seqArmed.load() ? "   SEQ ARMED" : s.seqHasData.load() ? "   SEQ" : "";
+        deckUI[d].status.setText (state + "   " + juce::String (s.loopSeconds.load(), 2) + " s" + seq, juce::dontSendNotification);
+
+        auto& ui = deckUI[d];
+        ui.buttons[5].setToggleState (s.seqArmed.load() || s.seqRecording.load(), juce::dontSendNotification);
+        if (ui.clearDownAt > 0.0 && ! ui.clearFired && juce::Time::getMillisecondCounterHiRes() - ui.clearDownAt >= 1500.0)
+        {
+            ui.clearFired = true;
+            pulse (UnofficialSpotykachProcessor::deckId ((int) d, "seqClear"));
+        }
+        ui.buttons[6].setButtonText (ui.clearFired ? "CLEARED" : ui.clearDownAt > 0.0 ? "HOLD..." : "CLEAR");
+    }
+
+    for (size_t m = 0; m < 2; ++m)
+    {
+        auto& ui = modUI[m];
+        const int type = juce::roundToInt (proc.apvts.getRawParameterValue (UnofficialSpotykachProcessor::modId ((int) m, "type"))->load());
+        const bool sync = proc.apvts.getRawParameterValue (UnofficialSpotykachProcessor::modId ((int) m, "sync"))->load() > 0.5f;
+        if (type != ui.lastType || sync != ui.lastSync)
+        {
+            ui.lastType = type;
+            ui.lastSync = sync;
+            ui.cycle.slider.updateText();
+            ui.cycle.label.setText (type == usp::kModFollow ? "Release" : "Rate", juce::dontSendNotification);
+        }
+        ui.sync.setEnabled (type != usp::kModFollow);
     }
 
     for (size_t d = 0; d < 2; ++d)

@@ -61,9 +61,19 @@ int main()
         press ("b_record"); run (1); release ("b_record"); run (1);
         press ("b_trig"); run (1); release ("b_trig"); run (1);
         press ("b_recInternal"); run (1); release ("b_recInternal"); run (1);
+        press ("seqArm"); run (1); release ("seqArm"); run (2);
+        press ("seqArm"); run (1); release ("seqArm"); run (1);
+        press ("b_seqClear"); run (1); release ("b_seqClear"); run (1);
+        // modulators on every target
+        for (int tg = 0; tg < 12; ++tg)
+        {
+            if (auto* t = proc.apvts.getParameter ("modA_target")) t->setValueNotifyingHost (t->convertTo0to1 ((float) tg));
+            if (auto* t = proc.apvts.getParameter ("modB_target")) t->setValueNotifyingHost (t->convertTo0to1 ((float) (11 - tg)));
+            run (2);
+        }
         for (int w : { 480, 640, 900, 1280 })
         {
-            ed->setSize (w, (int) std::lround (w * 712.0 / 640.0));
+            ed->setSize (w, (int) std::lround (w * (double) UnofficialSpotykachEditor::kBaseHeight / (double) UnofficialSpotykachEditor::kBaseWidth));
             auto snap = ed->createComponentSnapshot (ed->getLocalBounds());
             CHECK (snap.isValid());
             if (const char* dir = std::getenv ("US_SNAPSHOT_DIR"))   // optional: save pictures for inspection
@@ -103,11 +113,32 @@ int main()
             CHECK (pressed == 2);
         }
 
+        // MODS page, then back to SETUP
+        {
+            std::unique_ptr<juce::AudioProcessorEditor> e4 (proc.createEditor());
+            int found = 0;
+            for (const char* name : { "MODS", "SETUP" })
+            {
+                for (int i = 0; i < e4->getNumChildComponents(); ++i)
+                    if (auto* b = dynamic_cast<juce::TextButton*> (e4->getChildComponent (i)))
+                        if (b->getButtonText() == name) { b->onClick(); ++found; }
+                auto snap = e4->createComponentSnapshot (e4->getLocalBounds());
+                CHECK (snap.isValid());
+                if (juce::String (name) == "MODS")
+                    if (const char* dir = std::getenv ("US_SNAPSHOT_DIR"))
+                    {
+                        juce::FileOutputStream os (juce::File (dir).getChildFile ("editor_mods.png"));
+                        if (os.openedOk()) { os.setPosition (0); os.truncate(); juce::PNGImageFormat().writeImageToStream (snap, os); }
+                    }
+            }
+            CHECK (found == 2);
+        }
+
         // Closing and reopening the window must restore the last size.
         for (int w : { 900, 500 })
         {
             std::unique_ptr<juce::AudioProcessorEditor> e1 (proc.createEditor());
-            e1->setSize (w, (int) std::lround (w * 712.0 / 640.0));
+            e1->setSize (w, (int) std::lround (w * (double) UnofficialSpotykachEditor::kBaseHeight / (double) UnofficialSpotykachEditor::kBaseWidth));
             e1.reset();
             std::unique_ptr<juce::AudioProcessorEditor> e2 (proc.createEditor());
             std::printf ("  reopen: wanted %d, got %d\n", w, e2->getWidth());

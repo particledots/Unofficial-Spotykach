@@ -40,6 +40,14 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
         for (int i = 0; i < kNumDeckButtons; ++i)
             p.button[i] = apvts.getRawParameterValue (deckId (d, deckButtonBase (i)));
     }
+    for (int m = 0; m < 2; ++m)
+    {
+        mods[m].type   = apvts.getRawParameterValue (modId (m, "type"));
+        mods[m].cycle  = apvts.getRawParameterValue (modId (m, "cycle"));
+        mods[m].sync   = apvts.getRawParameterValue (modId (m, "sync"));
+        mods[m].glow   = apvts.getRawParameterValue (modId (m, "glow"));
+        mods[m].target = apvts.getRawParameterValue (modId (m, "target"));
+    }
     pCrossfade = apvts.getRawParameterValue ("crossfade");
     pRoute     = apvts.getRawParameterValue ("route");
     pPanSpeed  = apvts.getRawParameterValue ("panSpeed");
@@ -49,6 +57,15 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
     pQuantise    = apvts.getRawParameterValue ("quantise");
     pClick       = apvts.getRawParameterValue ("click");
     pOutLevel  = apvts.getRawParameterValue ("outLevel");
+}
+
+const juce::StringArray& UnofficialSpotykachProcessor::modTargetNames()
+{
+    static const juce::StringArray names { "None",
+        "A Position", "A Size", "A Position + Size", "A Pitch", "A Mix",
+        "B Position", "B Size", "B Position + Size", "B Pitch", "B Mix",
+        "A/B Crossfade" };
+    return names;
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor::createLayout()
@@ -103,9 +120,25 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
         knob ("feedback", "Feedback", 0.95f, percentText);
 
         // Buttons. A press is a rising edge (0 -> 1); the editor sends 1 then 0, automation can do the same.
-        static const char* names[kNumDeckButtons] = { "Record", "Play", "Reverse", "Trig", "Record From Other Deck" };
+        static const char* names[kNumDeckButtons] = { "Record", "Play", "Reverse", "Trig", "Record From Other Deck",
+                                                      "Sequencer Arm/Stop", "Sequencer Clear" };
         for (int i = 0; i < kNumDeckButtons; ++i)
             layout.add (std::make_unique<juce::AudioParameterBool> (id (deckButtonBase (i)), tag + names[i], false));
+    }
+
+    // Modulators. Defaults: firmware cycle 0.3; Glow 0.5 and Target "None" are mine (the firmware default Glow is 0).
+    for (int m = 0; m < 2; ++m)
+    {
+        const juce::String tag = m == 0 ? "Mod A " : "Mod B ";
+        auto id = [m] (const char* base) { return ParameterID { modId (m, base), 1 }; };
+        layout.add (std::make_unique<juce::AudioParameterChoice> (id ("type"), tag + "Type",
+            juce::StringArray { "Follow", "Sine", "Saw", "Square", "Random" }, 1));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (id ("cycle"), tag + "Cycle",
+            NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.3f, Attrs().withStringFromValueFunction (percentText)));
+        layout.add (std::make_unique<juce::AudioParameterBool> (id ("sync"), tag + "Sync", false));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (id ("glow"), tag + "Glow",
+            NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.5f, Attrs().withStringFromValueFunction (percentText)));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (id ("target"), tag + "Target", modTargetNames(), 0));
     }
 
     layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "crossfade", 1 }, "A/B Crossfade",
@@ -185,7 +218,8 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
 
     // Button presses = rising edges.
     static constexpr usp::EngineAction kButtonAction[kNumDeckButtons] =
-        { usp::kActionRecord, usp::kActionPlay, usp::kActionReverse, usp::kActionTrig, usp::kActionRecordInternal };
+        { usp::kActionRecord, usp::kActionPlay, usp::kActionReverse, usp::kActionTrig, usp::kActionRecordInternal,
+          usp::kActionSeqArm, usp::kActionSeqClear };
     uint32_t actions = 0;
     usp::EngineParams p;
     for (int d = 0; d < 2; ++d)
@@ -219,6 +253,15 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
         t.gritIntensity = dp.gritIntensity->load();
         t.gritMix       = dp.gritMix->load();
         t.gritCharacter = dp.gritCharacter->load();
+    }
+    for (int m = 0; m < 2; ++m)
+    {
+        auto& mp = p.mod[m];
+        mp.type   = juce::jlimit (0, 4, juce::roundToInt (mods[m].type->load()));
+        mp.cycle  = mods[m].cycle->load();
+        mp.sync   = mods[m].sync->load() > 0.5f;
+        mp.glow   = mods[m].glow->load();
+        mp.target = juce::jlimit (0, usp::kModTargetCount - 1, juce::roundToInt (mods[m].target->load()));
     }
     p.tempoBpm  = pTempo->load();
     p.hostSync  = juce::roundToInt (pTempoSource->load()) == 1;
