@@ -15,10 +15,11 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int kBaseWidth = 640, kBaseHeight = 778;
+    static constexpr int kBaseWidth = 1044, kBaseHeight = 622;
 
 private:
     class AboutPanel;
+    class PanelLook;
     using SliderAtt = juce::AudioProcessorValueTreeState::SliderAttachment;
 
     struct Knob
@@ -42,6 +43,8 @@ private:
     struct DeckUI
     {
         juce::Label title, status;
+        juce::Colour accent;                 // amber for Deck A, violet for Deck B (as in the mockup)
+        std::array<juce::TextButton, 3> modeChip;      // Reel / Slice / Drift (the Mode combo box below stays hidden and is the attachment)
         std::array<juce::TextButton, UnofficialSpotykachProcessor::kNumDeckButtons> buttons;
         std::array<Knob, 6> knobs;      // position, size, pitch, envelope, mix, feedback
         LabelledCombo mode, snap;
@@ -55,7 +58,7 @@ private:
         bool fxPage = false;
         double clearDownAt = 0.0;        // when CLEAR was pressed (hold 1.5 s, as on the hardware); 0 = not held
         bool clearFired = false;
-        juce::Rectangle<float> panel, loopBar;
+        juce::Rectangle<float> panel, ring;
     };
     struct ModUI
     {
@@ -79,13 +82,19 @@ private:
     void showGlobalPage();
     void tap();
     void layoutDeck (int deck, juce::Rectangle<int> area, float s);
+    void drawRing (juce::Graphics&, int deck);
     juce::Font font (float size, bool bold = false) const;
 
+    std::unique_ptr<PanelLook> laf;     // first member: destroyed last
     UnofficialSpotykachProcessor& proc;
+    juce::TooltipWindow tooltipWindow { this, 600 };
     float scale = 1.0f;
     bool sizeRemembering = false;   // only store the size once construction is finished
 
-    juce::Label titleLabel, versionLabel;
+    juce::Label titleLabel, unofficialLabel, taglineLabel, versionLabel;
+    juce::Rectangle<float> centrePanel, bottomPanel;
+    juce::Rectangle<int> footerArea;
+    juce::Label inputLabel;
     std::array<DeckUI, 2> deckUI;
     LabelledSlider crossfade, panSpeed, panRange, outLevel, tempo, click;
     std::array<ModUI, 2> modUI;

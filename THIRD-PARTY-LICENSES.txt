@@ -7,7 +7,7 @@ Academy product and is not affiliated with Synthux Academy.
 This plug-in as a whole is licensed under the GNU Affero General Public
 License version 3 (see the LICENSE file).
 
-What is in the build (Milestone 2):
+What is in the build (version 0.8.0):
   - Spotykach firmware core (MIT), vendored unchanged except for the listed
     modifications, in third_party/spotykach/ (see third_party/spotykach/NOTICE.md
     for the exact commit, the omitted files and every modification).

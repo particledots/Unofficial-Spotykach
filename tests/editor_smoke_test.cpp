@@ -100,7 +100,7 @@ int main()
             if (auto* t = proc.apvts.getParameter ("modB_target")) t->setValueNotifyingHost (t->convertTo0to1 ((float) (11 - tg)));
             run (2);
         }
-        for (int w : { 480, 640, 900, 1280 })
+        for (int w : { 783, 1044, 1400, 1566 })
         {
             ed->setSize (w, (int) std::lround (w * (double) UnofficialSpotykachEditor::kBaseHeight / (double) UnofficialSpotykachEditor::kBaseWidth));
             auto snap = ed->createComponentSnapshot (ed->getLocalBounds());
@@ -164,7 +164,7 @@ int main()
         }
 
         // Closing and reopening the window must restore the last size.
-        for (int w : { 900, 500 })
+        for (int w : { 1200, 800 })
         {
             std::unique_ptr<juce::AudioProcessorEditor> e1 (proc.createEditor());
             e1->setSize (w, (int) std::lround (w * (double) UnofficialSpotykachEditor::kBaseHeight / (double) UnofficialSpotykachEditor::kBaseWidth));

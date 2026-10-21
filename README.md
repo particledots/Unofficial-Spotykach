@@ -21,10 +21,10 @@ Built with [JUCE](https://juce.com).
 
 ## Status
 
-Milestone 8: both decks of the Spotykach looper with Reel, Slice and Drift modes, Flux (delay) and Grit
+Milestone 9: both decks of the Spotykach looper with Reel, Slice and Drift modes, Flux (delay) and Grit
 (drive, reduce, filter) effects, two modulators that can be patched to a destination, a trigger
 sequencer per deck, MIDI notes and CCs, CV-style automation inputs, fit tempo to loop, A/B crossfade,
-the three routing modes, tempo (internal, host sync or tap), launch quantise, loop files, trims and a resizable window.
+the three routing modes, tempo (internal, host sync or tap), launch quantise, loop files, trims and a resizable window laid out after the original panel mockup (Deck A on the left, Deck B mirrored on the right, shared controls in the middle, a ring per deck that shows the loop and its playhead).
 
 ## Loop files and projects
 
