@@ -39,7 +39,38 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
         p.feedback = apvts.getRawParameterValue (deckId (d, "feedback"));
         for (int i = 0; i < kNumDeckButtons; ++i)
             p.button[i] = apvts.getRawParameterValue (deckId (d, deckButtonBase (i)));
+        p.cvPitch = apvts.getRawParameterValue (deckId (d, "cvPitch"));
+        p.cvMix = apvts.getRawParameterValue (deckId (d, "cvMix"));
+        p.cvPosition = apvts.getRawParameterValue (deckId (d, "cvPosition"));
+        p.cvSize = apvts.getRawParameterValue (deckId (d, "cvSize"));
+        p.transportFollow = apvts.getRawParameterValue (deckId (d, "transportFollow"));
+        p.midiChannel = apvts.getRawParameterValue (deckId (d, "midiChannel"));
+        p.fitBeats = apvts.getRawParameterValue (deckId (d, "fitBeats"));
     }
+    pCvCrossfade = apvts.getRawParameterValue ("cvCrossfade");
+
+    // The firmware's CC map (src/core/config.h enum CC, handled in CoreUI::_on_midi_cc). CC 14/15/85/86 are
+    // buttons (handled in processBlock); the rest move a parameter. Per deck, on that deck's MIDI channel.
+    {
+        static const struct { int cc; const char* base; bool mod; } kDeckCc[] = {
+            { 20, "position", false }, { 21, "sliceOffset", false }, { 22, "size", false }, { 23, "envelope", false },
+            { 24, "pitch", false }, { 25, "mix", false }, { 26, "feedback", false }, { 27, "envLength", false },
+            { 28, "window", false }, { 89, "cycle", true }, { 90, "glow", true },
+            { 102, "gritOn", false }, { 103, "gritIntensity", false }, { 104, "gritMix", false },
+            { 105, "fluxOn", false }, { 106, "fluxTime", false }, { 107, "fluxFeedback", false }, { 108, "fluxMix", false },
+            { 109, "gritCharacter", false } };
+        auto bind = [this] (int slot, int cc, const juce::String& id)
+        {
+            ccRaw[slot][cc] = apvts.getRawParameterValue (id);
+            ccParam[slot][cc] = apvts.getParameter (id);
+            ccIsBool[slot][cc] = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (id)) != nullptr;
+        };
+        for (int d = 0; d < 2; ++d)
+            for (const auto& e : kDeckCc)
+                bind (d, e.cc, e.mod ? modId (d, e.base) : deckId (d, e.base));
+        bind (2, 3, "crossfade");   // CC 3: crossfade, on any channel
+    }
+    startTimerHz (30);
     for (int m = 0; m < 2; ++m)
     {
         mods[m].type   = apvts.getRawParameterValue (modId (m, "type"));
@@ -66,6 +97,11 @@ const juce::StringArray& UnofficialSpotykachProcessor::modTargetNames()
         "B Position", "B Size", "B Position + Size", "B Pitch", "B Mix",
         "A/B Crossfade" };
     return names;
+}
+
+UnofficialSpotykachProcessor::~UnofficialSpotykachProcessor()
+{
+    stopTimer();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor::createLayout()
@@ -119,9 +155,28 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
         knob ("mix",      "Mix",      0.5f,  percentText);
         knob ("feedback", "Feedback", 0.95f, percentText);
 
+        // CV-style inputs (the firmware's CV jacks), MIDI channel, transport follow, fit tempo.
+        auto cv = [&] (const char* base, const char* name, float lo, float hi, std::function<juce::String (float, int)> text)
+        {
+            layout.add (std::make_unique<juce::AudioParameterFloat> (id (base), tag + name,
+                NormalisableRange<float> (lo, hi, 0.001f), 0.0f, Attrs().withStringFromValueFunction (text)));
+        };
+        cv ("cvPitch",    "V/Oct CV",      -5.0f, 5.0f, [] (float v, int) { return (v >= 0 ? "+" : "") + juce::String (v, 2) + " oct"; });
+        cv ("cvMix",      "Mix CV",        -1.0f, 1.0f, [] (float v, int) { return (v >= 0 ? "+" : "") + juce::String (juce::roundToInt (v * 100.0f)) + " %"; });
+        cv ("cvPosition", "Position CV",   -1.0f, 1.0f, [] (float v, int) { return (v >= 0 ? "+" : "") + juce::String (juce::roundToInt (v * 100.0f)) + " %"; });
+        cv ("cvSize",     "Size CV",       -1.0f, 1.0f, [] (float v, int) { return (v >= 0 ? "+" : "") + juce::String (juce::roundToInt (v * 100.0f)) + " %"; });
+        {
+            juce::StringArray ch;
+            ch.add ("Off");
+            for (int i = 1; i <= 16; ++i) ch.add (juce::String (i));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (id ("midiChannel"), tag + "MIDI Channel", ch, d == 0 ? 1 : 2));
+        }
+        layout.add (std::make_unique<juce::AudioParameterBool> (id ("transportFollow"), tag + "Follow Transport", false));
+        layout.add (std::make_unique<juce::AudioParameterInt> (id ("fitBeats"), tag + "Fit Tempo Beats", 1, 16, 4));
+
         // Buttons. A press is a rising edge (0 -> 1); the editor sends 1 then 0, automation can do the same.
         static const char* names[kNumDeckButtons] = { "Record", "Play", "Reverse", "Trig", "Record From Other Deck",
-                                                      "Sequencer Arm/Stop", "Sequencer Clear" };
+                                                      "Sequencer Arm/Stop", "Sequencer Clear", "Fit Tempo To Loop" };
         for (int i = 0; i < kNumDeckButtons; ++i)
             layout.add (std::make_unique<juce::AudioParameterBool> (id (deckButtonBase (i)), tag + names[i], false));
     }
@@ -141,6 +196,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
         layout.add (std::make_unique<juce::AudioParameterChoice> (id ("target"), tag + "Target", modTargetNames(), 0));
     }
 
+    layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "cvCrossfade", 1 }, "Crossfade CV",
+        NormalisableRange<float> (-1.0f, 1.0f, 0.001f), 0.0f,
+        Attrs().withStringFromValueFunction ([] (float v, int) { return (v >= 0 ? "+" : "") + juce::String (juce::roundToInt (v * 100.0f)) + " %"; })));
     layout.add (std::make_unique<juce::AudioParameterFloat> (ParameterID { "crossfade", 1 }, "A/B Crossfade",
         NormalisableRange<float> (0.0f, 1.0f, 0.001f), 0.5f,
         Attrs().withStringFromValueFunction ([] (float v, int)
@@ -177,6 +235,7 @@ void UnofficialSpotykachProcessor::prepareToPlay (double sampleRate, int samples
     hostBlockSize.store (samplesPerBlock);
     engine.prepare (sampleRate, samplesPerBlock);       // allocates; never called from the audio callback
     setLatencySamples (engine.latencySamples());
+    hostKnown = false;
     outGain.reset (sampleRate, 0.02);                    // 20 ms ramp
     outGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (pOutLevel->load()));
     for (auto& d : decks)
@@ -194,18 +253,6 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
 {
     juce::ScopedNoDenormals noDenormals;
 
-    // MIDI bookkeeping only for now (the firmware's MIDI map arrives in a later milestone).
-    for (const auto metadata : midi)
-    {
-        const auto msg = metadata.getMessage();
-        midiEventCount.fetch_add (1, std::memory_order_relaxed);
-        if (msg.isNoteOn())
-        {
-            midiNoteOnCount.fetch_add (1, std::memory_order_relaxed);
-            lastNote.store (msg.getNoteNumber(), std::memory_order_relaxed);
-        }
-    }
-
     const int numSamples = buffer.getNumSamples();
     const int numChans   = juce::jmin (buffer.getNumChannels(), 2);
     if (numChans == 0 || numSamples == 0) return;
@@ -216,12 +263,17 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
     if (peak > inputPeak.load (std::memory_order_relaxed))
         inputPeak.store (peak, std::memory_order_relaxed);
 
+    // MIDI-moved parameters the message thread has not yet applied: keep asserting the value.
+    for (int sl = 0; sl < 3; ++sl)
+        for (int cc = 0; cc < 128; ++cc)
+            if (ccRaw[sl][cc] != nullptr && ccSlots[sl][cc].seq.load (std::memory_order_acquire) != ccSlots[sl][cc].applied.load (std::memory_order_acquire))
+                ccRaw[sl][cc]->store (ccSlots[sl][cc].latest.load (std::memory_order_relaxed), std::memory_order_relaxed);
+
     // Button presses = rising edges.
     static constexpr usp::EngineAction kButtonAction[kNumDeckButtons] =
         { usp::kActionRecord, usp::kActionPlay, usp::kActionReverse, usp::kActionTrig, usp::kActionRecordInternal,
-          usp::kActionSeqArm, usp::kActionSeqClear };
+          usp::kActionSeqArm, usp::kActionSeqClear, usp::kActionFitTempo };
     uint32_t actions = 0;
-    usp::EngineParams p;
     for (int d = 0; d < 2; ++d)
     {
         auto& dp = decks[d];
@@ -231,42 +283,7 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
             if (now && ! dp.was[i]) actions |= usp::deckAction (d, kButtonAction[i]);
             dp.was[i] = now;
         }
-        auto& t = p.deck[d];
-        t.position = dp.position->load();
-        t.size     = dp.size->load();
-        t.pitch    = dp.pitch->load();
-        t.envelope = dp.envelope->load();
-        t.mix      = dp.mix->load();
-        t.feedback = dp.feedback->load();
-        t.mode        = juce::jlimit (0, 2, juce::roundToInt (dp.mode->load()));
-        t.pitchSnap   = juce::jlimit (0, 2, juce::roundToInt (dp.pitchSnap->load()));
-        t.sliceOffset = dp.sliceOffset->load();
-        t.envLength   = dp.envLength->load();
-        t.window      = dp.window->load();
-        t.fluxOn        = dp.fluxOn->load() > 0.5f;
-        t.fluxMode      = juce::jlimit (0, 1, juce::roundToInt (dp.fluxMode->load()));
-        t.fluxTime      = dp.fluxTime->load();
-        t.fluxFeedback  = dp.fluxFeedback->load();
-        t.fluxMix       = dp.fluxMix->load();
-        t.gritOn        = dp.gritOn->load() > 0.5f;
-        t.gritMode      = juce::jlimit (0, 2, juce::roundToInt (dp.gritMode->load()));
-        t.gritIntensity = dp.gritIntensity->load();
-        t.gritMix       = dp.gritMix->load();
-        t.gritCharacter = dp.gritCharacter->load();
     }
-    for (int m = 0; m < 2; ++m)
-    {
-        auto& mp = p.mod[m];
-        mp.type   = juce::jlimit (0, 4, juce::roundToInt (mods[m].type->load()));
-        mp.cycle  = mods[m].cycle->load();
-        mp.sync   = mods[m].sync->load() > 0.5f;
-        mp.glow   = mods[m].glow->load();
-        mp.target = juce::jlimit (0, usp::kModTargetCount - 1, juce::roundToInt (mods[m].target->load()));
-    }
-    p.tempoBpm  = pTempo->load();
-    p.hostSync  = juce::roundToInt (pTempoSource->load()) == 1;
-    p.launchQuantise = juce::jlimit (0, 16, juce::roundToInt (pQuantise->load()));
-    p.clickLevel = pClick->load();
 
     usp::HostTransport host;
     if (auto* ph = getPlayHead())
@@ -278,14 +295,152 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
             if (auto ppq = pos->getPpqPosition()) { host.hasPpq = true; host.ppq = *ppq; }
         }
     }
-    p.crossfade = pCrossfade->load();
-    p.route     = juce::jlimit (0, 2, juce::roundToInt (pRoute->load()));
-    p.panSpeed  = pPanSpeed->load();
-    p.panRange  = pPanRange->load();
+    // Host transport start/stop plays/stops the decks that have Follow Transport on (the firmware does this with
+    // MIDI Start/Stop; whether Logic sends those to a plug-in is unverified, so the host's own state is used as well).
+    if (hostKnown && host.playing != hostWasPlaying)
+        for (int d = 0; d < 2; ++d)
+            if (decks[d].transportFollow->load() > 0.5f)
+                actions |= usp::deckAction (d, host.playing ? usp::kActionTransportStart : usp::kActionTransportStop);
+    hostWasPlaying = host.playing;
+    hostKnown = true;
 
     float* left  = buffer.getWritePointer (0);
     float* right = numChans > 1 ? buffer.getWritePointer (1) : left;
-    engine.process (left, right, left, right, numSamples, p, actions, host);
+
+    auto buildParams = [this]
+    {
+        usp::EngineParams p;
+        for (int d = 0; d < 2; ++d)
+        {
+            auto& dp = decks[d];
+            auto& t = p.deck[d];
+            t.position = dp.position->load();
+            t.size     = dp.size->load();
+            t.pitch    = dp.pitch->load();
+            t.envelope = dp.envelope->load();
+            t.mix      = dp.mix->load();
+            t.feedback = dp.feedback->load();
+            t.mode        = juce::jlimit (0, 2, juce::roundToInt (dp.mode->load()));
+            t.pitchSnap   = juce::jlimit (0, 2, juce::roundToInt (dp.pitchSnap->load()));
+            t.sliceOffset = dp.sliceOffset->load();
+            t.envLength   = dp.envLength->load();
+            t.window      = dp.window->load();
+            t.fluxOn        = dp.fluxOn->load() > 0.5f;
+            t.fluxMode      = juce::jlimit (0, 1, juce::roundToInt (dp.fluxMode->load()));
+            t.fluxTime      = dp.fluxTime->load();
+            t.fluxFeedback  = dp.fluxFeedback->load();
+            t.fluxMix       = dp.fluxMix->load();
+            t.gritOn        = dp.gritOn->load() > 0.5f;
+            t.gritMode      = juce::jlimit (0, 2, juce::roundToInt (dp.gritMode->load()));
+            t.gritIntensity = dp.gritIntensity->load();
+            t.gritMix       = dp.gritMix->load();
+            t.gritCharacter = dp.gritCharacter->load();
+            t.cvPitch    = dp.cvPitch->load();
+            t.cvMix      = dp.cvMix->load();
+            t.cvPosition = dp.cvPosition->load();
+            t.cvSize     = dp.cvSize->load();
+            t.fitBeats   = juce::jlimit (1, 16, juce::roundToInt (dp.fitBeats->load()));
+        }
+        for (int m = 0; m < 2; ++m)
+        {
+            auto& mp = p.mod[m];
+            mp.type   = juce::jlimit (0, 4, juce::roundToInt (mods[m].type->load()));
+            mp.cycle  = mods[m].cycle->load();
+            mp.sync   = mods[m].sync->load() > 0.5f;
+            mp.glow   = mods[m].glow->load();
+            mp.target = juce::jlimit (0, usp::kModTargetCount - 1, juce::roundToInt (mods[m].target->load()));
+        }
+        p.tempoBpm  = pTempo->load();
+        p.hostSync  = juce::roundToInt (pTempoSource->load()) == 1;
+        p.launchQuantise = juce::jlimit (0, 16, juce::roundToInt (pQuantise->load()));
+        p.clickLevel = pClick->load();
+        p.crossfade = pCrossfade->load();
+        p.cvCrossfade = pCvCrossfade->load();
+        p.route     = juce::jlimit (0, 2, juce::roundToInt (pRoute->load()));
+        p.panSpeed  = pPanSpeed->load();
+        p.panRange  = pPanRange->load();
+        return p;
+    };
+
+    int notes[2] = { -1, -1 };
+    int done = 0;
+    auto render = [&] (int upTo)
+    {
+        const int len = upTo - done;
+        const auto p = buildParams();
+        // The host position is for the start of the block; move it on to the start of this piece.
+        auto h = host;
+        if (h.hasPpq && h.playing && getSampleRate() > 0.0) h.ppq += (double) done / getSampleRate() * h.bpm / 60.0;
+        engine.process (left + done, right + done, left + done, right + done, len, p, actions, h, notes);
+        actions = 0;
+        notes[0] = notes[1] = -1;
+        done = upTo;
+    };
+
+    // MIDI: the audio is rendered in pieces so each message takes effect at its own sample position.
+    for (const auto metadata : midi)
+    {
+        const auto msg = metadata.getMessage();
+        midiEventCount.fetch_add (1, std::memory_order_relaxed);
+        const int pos = juce::jlimit (done, numSamples, metadata.samplePosition);
+        const int ch = msg.getChannel();                       // 1..16, 0 for system messages
+        auto deckOnChannel = [&] (int c) -> int
+        {
+            if (c < 1) return -1;
+            for (int d = 0; d < 2; ++d)
+                if (juce::roundToInt (decks[d].midiChannel->load()) == c) return d;   // Deck A wins if both share a channel
+            return -1;
+        };
+
+        if (msg.isNoteOn())
+        {
+            midiNoteOnCount.fetch_add (1, std::memory_order_relaxed);
+            lastNote.store (msg.getNoteNumber(), std::memory_order_relaxed);
+            lastNoteChannel.store (ch, std::memory_order_relaxed);
+            const int d = deckOnChannel (ch);
+            if (d >= 0)
+            {
+                if (pos > done || notes[d] >= 0) render (pos);      // a second note for the same deck starts a new piece
+                notes[d] = msg.getNoteNumber();
+            }
+        }
+        else if (msg.isController())
+        {
+            const int cc = msg.getControllerNumber(), val = msg.getControllerValue();
+            lastCc.store (cc, std::memory_order_relaxed);
+            lastCcValue.store (val, std::memory_order_relaxed);
+            lastCcChannel.store (ch, std::memory_order_relaxed);
+            const int d = deckOnChannel (ch);
+            // Buttons (the firmware acts on values above 0)
+            const struct { int cc; usp::EngineAction a; } kButtonCc[] = { { 14, usp::kActionRecord }, { 15, usp::kActionRecordInternal },
+                                                                         { 85, usp::kActionPlay }, { 86, usp::kActionReverse } };
+            for (const auto& b : kButtonCc)
+                if (cc == b.cc && val > 0 && d >= 0)
+                {
+                    if (pos > done) render (pos);
+                    actions |= usp::deckAction (d, b.a);
+                }
+            // Parameters
+            const int slot = cc == 3 ? 2 : d;     // CC 3 (crossfade) works on any channel
+            if (slot >= 0 && cc < 128 && ccRaw[slot][cc] != nullptr)
+            {
+                if (pos > done) render (pos);
+                const float v = ccIsBool[slot][cc] ? (val > 0 ? 1.0f : 0.0f) : (float) val / 127.0f;
+                auto& sl = ccSlots[slot][cc];
+                sl.latest.store (v, std::memory_order_relaxed);
+                sl.seq.fetch_add (1, std::memory_order_release);
+                ccRaw[slot][cc]->store (v, std::memory_order_relaxed);
+            }
+        }
+        else if (msg.isMidiStart() || msg.isMidiContinue() || msg.isMidiStop())
+        {
+            if (pos > done) render (pos);
+            for (int d = 0; d < 2; ++d)
+                if (decks[d].transportFollow->load() > 0.5f)
+                    actions |= usp::deckAction (d, msg.isMidiStop() ? usp::kActionTransportStop : usp::kActionTransportStart);
+        }
+    }
+    render (numSamples);
 
     // Output level, smoothed. At 0 dB the audio is untouched.
     outGain.setTargetValue (juce::Decibels::decibelsToGain (pOutLevel->load()));
@@ -297,6 +452,33 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
             for (int c = 0; c < numChans; ++c)
                 buffer.getWritePointer (c)[i] *= g;
         }
+    }
+}
+
+void UnofficialSpotykachProcessor::timerCallback() { applyPendingMidi(); }
+
+// Message thread, 30 Hz.
+void UnofficialSpotykachProcessor::applyPendingMidi()
+{
+    for (int sl = 0; sl < 3; ++sl)
+        for (int cc = 0; cc < 128; ++cc)
+        {
+            auto* par = ccParam[sl][cc];
+            if (par == nullptr) continue;
+            auto& s = ccSlots[sl][cc];
+            const uint32_t seq = s.seq.load (std::memory_order_acquire);
+            if (seq == s.applied.load (std::memory_order_relaxed)) continue;
+            par->setValueNotifyingHost (par->convertTo0to1 (s.latest.load (std::memory_order_relaxed)));
+            s.applied.store (seq, std::memory_order_release);
+        }
+
+    // Fit tempo succeeded in the engine: make the Tempo parameter match and switch to the internal clock.
+    const uint32_t fit = engine.status().fitSeq.load();
+    if (fit != lastFitSeq)
+    {
+        lastFitSeq = fit;
+        if (auto* src = apvts.getParameter ("tempoSource")) src->setValueNotifyingHost (0.0f);
+        if (auto* t = apvts.getParameter ("tempo")) t->setValueNotifyingHost (t->convertTo0to1 (engine.status().fitBpm.load()));
     }
 }
 

@@ -200,16 +200,27 @@ namespace usp
                 if (what == 4) mixMod[d] += out;
             }
 
+            // CV-style inputs (automatable parameters): smoothed here, then added to the modulator outputs.
+            auto finite = [] (float v, float lo, float hi) { return std::isfinite (v) ? std::min (hi, std::max (lo, v)) : 0.0f; };
+            auto glide = [&] (float& c, const float t) { c = first ? t : c + 0.12f * (t - c); };
             for (int d = 0; d < 2; ++d)
             {
+                const auto& t = target.deck[d];
+                auto& c = cvCur[d];
+                glide (c[0], finite (t.cvPitch, -5.0f, 5.0f));
+                glide (c[1], finite (t.cvMix, -1.0f, 1.0f));
+                glide (c[2], finite (t.cvPosition, -1.0f, 1.0f));
+                glide (c[3], finite (t.cvSize, -1.0f, 1.0f));
+
                 auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
-                deck.inout_mix_mod_in (std::min (1.0f, mixMod[d]));
-                deck.voxs().set_start_mod (std::min (1.0f, posMod[d]));
-                deck.voxs().set_size_mod (std::min (1.0f, sizeMod[d]));
-                // The pitch input is a speed multiplier (1.0 = none). Unipolar modulator: 0..1 = 0..+1 octave.
-                deck.voxs().pitch_speed_mod_in (std::exp2 (std::min (1.0f, pitchMod[d])));
+                deck.inout_mix_mod_in (std::min (1.0f, std::max (-1.0f, mixMod[d] + c[1])));
+                deck.voxs().set_start_mod (std::min (1.0f, std::max (-1.0f, posMod[d] + c[2])));
+                deck.voxs().set_size_mod (std::min (1.0f, std::max (-1.0f, sizeMod[d] + c[3])));
+                // The pitch input is a speed multiplier (1.0 = none). A modulator adds 0..+1 octave; the V/Oct input adds -5..+5.
+                deck.voxs().pitch_speed_mod_in (std::exp2 (std::min (1.0f, pitchMod[d]) + c[0]));
             }
-            core->mix_mod_in (std::min (1.0f, xfadeMod));
+            glide (cvCur[2][0], finite (target.cvCrossfade, -1.0f, 1.0f));
+            core->mix_mod_in (std::min (1.0f, xfadeMod));   // the core ignores negative values here; the CV input goes through set_mix
         }
 
         // ---- Parameters -------------------------------------------------------------------------------
@@ -277,7 +288,8 @@ namespace usp
             }
 
             // The core smooths the crossfade itself (OnePoleSmoother), so it goes in directly.
-            if (changed (last.crossfade, target.crossfade)) core->set_mix (target.crossfade);
+            const float xfade = std::min (1.0f, std::max (0.0f, target.crossfade + cvCur[2][0]));
+            if (changed (last.crossfade, xfade)) core->set_mix (xfade);
             if (first || target.route != last.route)
             {
                 last.route = target.route;
@@ -338,8 +350,13 @@ namespace usp
             }
         }
 
-        float effectiveBpm() const
+        float effectiveBpm()
         {
+            if (fitBpmActive > 0.0f)
+            {
+                if (std::abs (target.tempoBpm - fitTempoAtFit) < 1.0e-4f) return fitBpmActive;   // Tempo parameter not touched since the fit
+                fitBpmActive = 0.0f;
+            }
             return (target.hostSync && hostNow.hasTempo) ? (float) hostNow.bpm : target.tempoBpm;
         }
 
@@ -414,7 +431,7 @@ namespace usp
             for (int d = 0; d < 2; ++d)
             {
                 const auto ref = d == 0 ? Deck::A : Deck::B;
-                const uint32_t bits = (actions >> (d * 8)) & 0xffu;
+                const uint32_t bits = (actions >> (d * 16)) & 0xffffu;
                 if (bits == 0) continue;
                 auto& deck = core->deck (ref);
 
@@ -444,6 +461,28 @@ namespace usp
                     if (t.is_armed()) t.disarm(); else t.arm (! core->driver().is_key_sub_quarter());
                 }
                 if ((bits & kActionSeqClear) != 0) deck.clear_sequence();
+
+                // MIDI Start/Continue/Stop in the firmware (CoreMIDI::_process_realtime): play / stop the deck.
+                // (Its Driver::reset() does nothing on the internal clock, and host sync does its own alignment.)
+                if ((bits & kActionTransportStart) != 0 && ! deck.is_empty()) deck.play();
+                if ((bits & kActionTransportStop) != 0) deck.stop();
+
+                // Fit tempo to loop: bpm = 60 * beats / loop seconds (Deck::tempo_to_fit). Refused outside 20..250 BPM.
+                if ((bits & kActionFitTempo) != 0)
+                {
+                    const double seconds = (double) deck.buffer().rec_size() / kEngineRate;
+                    const int beats = std::min (16, std::max (1, target.deck[d].fitBeats));
+                    const double bpm = seconds > 0.0 ? 60.0 * beats / seconds : 0.0;
+                    if (! deck.is_empty() && bpm >= 20.0 && bpm <= 250.0)
+                    {
+                        const float got = deck.tempo_to_fit ((float) (beats - 1) / 15.0f);
+                        fitBpmActive = got;
+                        fitTempoAtFit = target.tempoBpm;
+                        status.fitBpm.store (got, std::memory_order_relaxed);
+                        status.fitSeq.fetch_add (1, std::memory_order_relaxed);
+                    }
+                    else status.fitFailSeq.fetch_add (1, std::memory_order_relaxed);
+                }
 
                 if ((bits & kActionTrig) != 0)
                 {
@@ -534,7 +573,7 @@ namespace usp
         }
 
         void process (const float* inL, const float* inR, float* outL, float* outR, int n,
-                      const EngineParams& params, const uint32_t actions, const HostTransport& host)
+                      const EngineParams& params, const uint32_t actions, const HostTransport& host, const int* noteOn)
         {
             if (! ready)
             {
@@ -548,6 +587,17 @@ namespace usp
             hostNow = host;
             hostFresh = true;
             applyActions (actions);
+            if (noteOn != nullptr)
+                for (int d = 0; d < 2; ++d)
+                    if (noteOn[d] >= 0)
+                    {
+                        // CoreUI::_on_midi_note_on: a discontinuous event whose speed is 2^((note - 60) / 12), +-5 octaves.
+                        auto e = spotykach::make_event();
+                        e.discont = true;
+                        e.p3 = std::exp2 ((float) std::min (60, std::max (-60, noteOn[d] - 60)) / 12.0f);
+                        e.p3_on = true;
+                        core->deck (d == 0 ? spotykach::Deck::A : spotykach::Deck::B).trigger (&e);
+                    }
 
             int off = 0;
             while (off < n)
@@ -598,6 +648,8 @@ namespace usp
         bool ready = false;
 
         EngineParams target, cur, last;
+        float cvCur[3][4] = {};      // smoothed CV inputs: [deck A, deck B, global][pitch, mix, position, size]; global uses [0] = crossfade
+        float fitBpmActive = 0.0f, fitTempoAtFit = 0.0f;   // after Fit tempo, keep that tempo until the Tempo parameter is changed
         ModParams lastMod[2] = { { -1, -1.0f, false, -1.0f, 0 }, { -1, -1.0f, false, -1.0f, 0 } };
         HostTransport hostNow;
         bool hostFresh = false, clockLocked = false, ppqValid = false;
@@ -627,8 +679,8 @@ namespace usp
     void Engine::prepare (double hostSampleRate, int maxHostBlock) { impl->prepare (hostSampleRate, maxHostBlock); }
     int  Engine::latencySamples() const { return impl->latency(); }
     void Engine::process (const float* inL, const float* inR, float* outL, float* outR, int n,
-                          const EngineParams& params, uint32_t actions, const HostTransport& host)
+                          const EngineParams& params, uint32_t actions, const HostTransport& host, const int* noteOn)
     {
-        impl->process (inL, inR, outL, outR, n, params, actions, host);
+        impl->process (inL, inR, outL, outR, n, params, actions, host, noteOn);
     }
 }

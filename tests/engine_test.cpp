@@ -47,6 +47,7 @@ struct Rig
     std::vector<float> lastOutR;                 // right output of the last run()
     HostTransport host;                          // advanced by run() while host.playing
     const std::vector<float>* rightIn = nullptr; // if set, used as right input (same length as the left input)
+    int noteOn[2] = { -1, -1 };                  // MIDI notes for the first block of the next run(); cleared after use
 
     Rig (double r, int b) : rate (r), block (b) { params.crossfade = 0.0f; engine.prepare (r, b); }
 
@@ -61,13 +62,14 @@ struct Rig
             const int n = (int) std::min ((size_t) block, in.size() - off);
             const long before = allocCount();
             engine.process (inCopy.data() + off, inR.data() + off, out.data() + off, outR.data() + off, n,
-                            params, first ? actionsAtStart : 0u, host);
+                            params, first ? actionsAtStart : 0u, host, first ? noteOn : nullptr);
             if (host.playing) host.ppq += (double) n / rate * host.bpm / 60.0;
             gAudioThreadAllocs += allocCount() - before;
             first = false;
             off += (size_t) n;
         }
         lastOutR = outR;
+        noteOn[0] = noteOn[1] = -1;
         return out;
     }
 };
@@ -537,6 +539,155 @@ static void testModulatorsAndSequencer (double rate, int block)
     }
 }
 
+
+// MIDI notes, transport, fit tempo and the CV-style inputs.
+static void testMidiTransportFitCv (double rate, int block)
+{
+    const uint32_t recA = deckAction (0, kActionRecord), playA = deckAction (0, kActionPlay);
+    const auto tone = sine (rate, 1.0, 330.0, 0.5f);
+    auto loopPlaying = [&] (Rig& r, int mode = 0)
+    {
+        r.params.deck[0].mix = 1.0f;
+        r.params.deck[0].mode = mode;
+        r.run (silence (rate, 0.3));
+        r.run (silence (rate, 0.05), recA);
+        r.run (tone);
+        r.run (silence (rate, 0.05), recA);
+        r.run (silence (rate, 0.05), playA);
+        r.run (silence (rate, 0.5));
+    };
+    auto crossingsNow = [&] (Rig& r)
+    {
+        r.run (silence (rate, 0.3));          // let pitch glides settle
+        auto o = r.run (silence (rate, 0.5));
+        return zeroCrossings (o, 0, o.size());
+    };
+
+    {   // MIDI note: the triggered pass plays at 2^((note - 60) / 12) (later passes of a looping deck play at normal speed,
+        // as on the hardware, so measure right after the trigger)
+        Rig r (rate, block);
+        loopPlaying (r);
+        auto window = [&] (Rig& rr)
+        {
+            rr.run (silence (rate, 0.06));
+            auto o = rr.run (silence (rate, 0.3));
+            return zeroCrossings (o, 0, o.size());
+        };
+        const int base = window (r);
+        r.noteOn[0] = 72; r.run (silence (rate, 0.001));
+        const int up = window (r);
+        r.noteOn[0] = 48; r.run (silence (rate, 0.001));
+        const int down = window (r);
+        r.noteOn[0] = 60; r.run (silence (rate, 0.001));
+        const int same = window (r);
+        std::printf ("  midi note: crossings per 0.3 s: base %d, note 72 %d, note 48 %d, note 60 %d\n", base, up, down, same);
+        CHECK (std::abs (up - 2 * base) < base / 8 + 6, "note 72 is not an octave up (%d vs 2x%d)", up, base);
+        CHECK (std::abs (down * 2 - base) < base / 8 + 6, "note 48 is not an octave down (%d vs %d/2)", down, base);
+        CHECK (std::abs (same - base) < base / 8 + 6, "note 60 changed the pitch (%d vs %d)", same, base);
+        r.noteOn[1] = 127; r.noteOn[0] = 0; r.run (silence (rate, 0.2));   // extremes must stay finite
+        CHECK (finiteAndBounded (r.run (silence (rate, 0.3))), "extreme notes not finite");
+    }
+    {   // transport start / stop
+        Rig r (rate, block);
+        loopPlaying (r);
+        const auto& s = r.engine.status().deck[0];
+        CHECK (s.playing.load(), "deck not playing before Stop");
+        r.run (silence (rate, 0.05), deckAction (0, kActionTransportStop));
+        r.run (silence (rate, 0.1));
+        CHECK (! s.playing.load(), "transport Stop did not stop the deck");
+        r.run (silence (rate, 0.05), deckAction (0, kActionTransportStart));
+        r.run (silence (rate, 0.3));
+        CHECK (s.playing.load(), "transport Start did not play the deck");
+        Rig e (rate, block);   // an empty deck must not start
+        e.run (silence (rate, 0.05), deckAction (0, kActionTransportStart));
+        e.run (silence (rate, 0.2));
+        CHECK (! e.engine.status().deck[0].playing.load(), "transport Start played an empty deck");
+    }
+    {   // Fit tempo: a 2.0 s loop over 4 beats is 120 BPM; the engine keeps it until Tempo is touched
+        Rig r (rate, block);
+        r.params.tempoBpm = 90.0f;
+        r.params.hostSync = false;
+        r.params.deck[0].mode = 1;
+        r.params.deck[0].mix = 1.0f;
+        r.run (silence (rate, 0.3));
+        r.run (silence (rate, 0.05), recA);
+        r.run (sine (rate, 2.0, 330.0, 0.5f));
+        r.run (silence (rate, 0.05), recA);
+        r.run (silence (rate, 0.2));
+        const auto& st = r.engine.status();
+        const double seconds = st.deck[0].loopSeconds.load();
+        r.params.deck[0].fitBeats = 4;
+        r.run (silence (rate, 0.05), deckAction (0, kActionFitTempo));
+        r.run (silence (rate, 0.2));
+        const double expected = 60.0 * 4 / seconds;
+        std::printf ("  fit tempo: loop %.3f s, 4 beats -> %.2f BPM (expected %.2f), engine tempo %.2f\n", seconds, st.fitBpm.load(), expected, st.tempoBpm.load());
+        CHECK (st.fitSeq.load() == 1, "fit tempo did not report success");
+        CHECK (std::abs (st.fitBpm.load() - expected) < 0.5, "fit tempo %.2f, expected %.2f", st.fitBpm.load(), expected);
+        CHECK (std::abs (st.tempoBpm.load() - expected) < 0.5, "engine tempo %.2f after fit, expected %.2f", st.tempoBpm.load(), expected);
+        r.params.tempoBpm = 100.0f;
+        r.run (silence (rate, 0.2));
+        CHECK (std::abs (st.tempoBpm.load() - 100.0f) < 0.5, "Tempo parameter ignored after a fit (%.2f)", st.tempoBpm.load());
+        r.params.deck[0].fitBeats = 16;      // 16 beats in about 2 s = ~480 BPM: refused
+        r.run (silence (rate, 0.05), deckAction (0, kActionFitTempo));
+        r.run (silence (rate, 0.1));
+        CHECK (st.fitFailSeq.load() == 1 && st.fitSeq.load() == 1, "out-of-range fit was not refused");
+        Rig e (rate, block);
+        e.run (silence (rate, 0.05), deckAction (0, kActionFitTempo));
+        e.run (silence (rate, 0.1));
+        CHECK (e.engine.status().fitFailSeq.load() == 1, "fit on an empty deck was not refused");
+    }
+    {   // CV-style inputs
+        Rig r (rate, block);
+        loopPlaying (r);
+        const int base = crossingsNow (r);
+        r.params.deck[0].cvPitch = 1.0f;
+        const int up = crossingsNow (r);
+        r.params.deck[0].cvPitch = -1.0f;
+        const int down = crossingsNow (r);
+        r.params.deck[0].cvPitch = 0.0f;
+        std::printf ("  cv pitch: base %d, +1 V %d, -1 V %d crossings per 0.5 s\n", base, up, down);
+        CHECK (std::abs (up - 2 * base) < base / 7 + 8, "+1 V/Oct is not an octave up (%d vs 2x%d)", up, base);
+        CHECK (std::abs (down * 2 - base) < base / 7 + 8, "-1 V/Oct is not an octave down (%d vs %d/2)", down, base);
+
+        // Mix CV: with Mix at 0 (input only, silent input) the loop is inaudible; +1 brings it in
+        r.params.deck[0].mix = 0.0f;
+        r.run (silence (rate, 0.4));
+        const double quiet = rms (r.run (silence (rate, 0.4)), 0, (size_t) (rate * 0.4));
+        r.params.deck[0].cvMix = 1.0f;
+        r.run (silence (rate, 0.4));
+        const double loud = rms (r.run (silence (rate, 0.4)), 0, (size_t) (rate * 0.4));
+        std::printf ("  cv mix: rms %.4f -> %.4f\n", quiet, loud);
+        CHECK (quiet < 0.02 && loud > 0.1, "Mix CV not audible (%.4f -> %.4f)", quiet, loud);
+        r.params.deck[0].cvMix = 0.0f;
+        r.params.deck[0].mix = 1.0f;
+
+        // Crossfade CV: +1 moves to Deck B (empty) so the output falls silent
+        r.params.crossfade = 0.0f;
+        r.params.cvCrossfade = 1.0f;
+        r.run (silence (rate, 0.5));
+        const double gone = rms (r.run (silence (rate, 0.4)), 0, (size_t) (rate * 0.4));
+        r.params.cvCrossfade = 0.0f;
+        r.run (silence (rate, 0.5));
+        const double back = rms (r.run (silence (rate, 0.4)), 0, (size_t) (rate * 0.4));
+        std::printf ("  cv crossfade: rms %.4f with +1, %.4f with 0\n", gone, back);
+        CHECK (gone < 0.02 && back > 0.1, "Crossfade CV not audible (%.4f / %.4f)", gone, back);
+
+        // Position and Size CV: bounded output in every mode, including extremes
+        for (int mode = 0; mode < 3; ++mode)
+            for (float v : { -1.0f, 1.0f, 0.5f, -0.3f })
+            {
+                r.params.deck[0].mode = mode;
+                r.params.deck[0].envelope = 0.5f;
+                r.params.deck[0].cvPosition = v; r.params.deck[0].cvSize = -v;
+                auto o = r.run (silence (rate, 0.2));
+                CHECK (finiteAndBounded (o), "output not finite with Position/Size CV %.1f in mode %d", v, mode);
+            }
+        r.params.deck[0].cvPosition = std::nanf ("");   // a bad host value must not hang or poison the engine
+        r.params.deck[0].cvPitch = INFINITY;
+        CHECK (finiteAndBounded (r.run (silence (rate, 0.2))), "NaN/inf CV not contained");
+    }
+}
+
 static void testInstancesAreIndependent()
 {
     Rig a (44100.0, 512), b (96000.0, 137);
@@ -599,6 +750,7 @@ int main (int argc, char** argv)
             if (block == 64 || block == 512) testModesTempoPitch (rate, block);
             if (block == 64 || block == 512) testFx (rate, block);
             if (block == 64 || block == 512) testModulatorsAndSequencer (rate, block);
+            if (block == 64 || block == 512) testMidiTransportFitCv (rate, block);
         }
 
     std::printf ("two independent instances\n");

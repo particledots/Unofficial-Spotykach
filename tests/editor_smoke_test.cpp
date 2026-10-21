@@ -64,6 +64,34 @@ int main()
         press ("seqArm"); run (1); release ("seqArm"); run (2);
         press ("seqArm"); run (1); release ("seqArm"); run (1);
         press ("b_seqClear"); run (1); release ("b_seqClear"); run (1);
+        // MIDI through the real processor: notes, CCs, transport, on the right and the wrong channel
+        {
+            juce::MidiBuffer mb;
+            mb.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 10);
+            mb.addEvent (juce::MidiMessage::controllerEvent (1, 22, 64), 100);     // Deck A size
+            mb.addEvent (juce::MidiMessage::controllerEvent (2, 22, 127), 120);    // Deck B size
+            mb.addEvent (juce::MidiMessage::controllerEvent (5, 22, 0), 130);      // unmatched channel: ignored
+            mb.addEvent (juce::MidiMessage::controllerEvent (9, 3, 127), 140);     // crossfade works on any channel
+            mb.addEvent (juce::MidiMessage::controllerEvent (1, 105, 127), 150);   // Flux on
+            mb.addEvent (juce::MidiMessage::controllerEvent (1, 85, 127), 160);    // play
+            mb.addEvent (juce::MidiMessage::midiStart(), 200);
+            mb.addEvent (juce::MidiMessage::midiStop(), 300);
+            buf.clear();
+            proc.processBlock (buf, mb);
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < 512; ++i) CHECK (std::isfinite (buf.getSample (c, i)));
+            CHECK (std::abs (proc.apvts.getRawParameterValue ("size")->load() - 64.0f / 127.0f) < 1.0e-3f);
+            CHECK (std::abs (proc.apvts.getRawParameterValue ("b_size")->load() - 1.0f) < 1.0e-3f);
+            CHECK (std::abs (proc.apvts.getRawParameterValue ("crossfade")->load() - 1.0f) < 1.0e-3f);
+            CHECK (proc.apvts.getRawParameterValue ("fluxOn")->load() > 0.5f);
+            CHECK (proc.lastCc.load() == 3 || proc.lastCc.load() == 85 || proc.lastCc.load() == 105);
+            // The message thread has not run here; applying the pending values is what the 30 Hz timer does.
+            proc.applyPendingMidi();
+            CHECK (std::abs (proc.apvts.getParameter ("b_size")->getValue() - 1.0f) < 1.0e-3f);
+            CHECK (proc.apvts.getParameter ("fluxOn")->getValue() > 0.5f);
+            proc.apvts.getParameter ("crossfade")->setValueNotifyingHost (0.0f);
+            proc.apvts.getParameter ("fluxOn")->setValueNotifyingHost (0.0f);
+        }
+
         // modulators on every target
         for (int tg = 0; tg < 12; ++tg)
         {
@@ -117,21 +145,21 @@ int main()
         {
             std::unique_ptr<juce::AudioProcessorEditor> e4 (proc.createEditor());
             int found = 0;
-            for (const char* name : { "MODS", "SETUP" })
+            for (const char* name : { "MODS", "CV", "MIDI", "SETUP" })
             {
                 for (int i = 0; i < e4->getNumChildComponents(); ++i)
                     if (auto* b = dynamic_cast<juce::TextButton*> (e4->getChildComponent (i)))
                         if (b->getButtonText() == name) { b->onClick(); ++found; }
                 auto snap = e4->createComponentSnapshot (e4->getLocalBounds());
                 CHECK (snap.isValid());
-                if (juce::String (name) == "MODS")
+                if (juce::String (name) != "SETUP")
                     if (const char* dir = std::getenv ("US_SNAPSHOT_DIR"))
                     {
-                        juce::FileOutputStream os (juce::File (dir).getChildFile ("editor_mods.png"));
+                        juce::FileOutputStream os (juce::File (dir).getChildFile ("editor_" + juce::String (name).toLowerCase() + ".png"));
                         if (os.openedOk()) { os.setPosition (0); os.truncate(); juce::PNGImageFormat().writeImageToStream (snap, os); }
                     }
             }
-            CHECK (found == 2);
+            CHECK (found == 4);
         }
 
         // Closing and reopening the window must restore the last size.

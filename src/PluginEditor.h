@@ -15,7 +15,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int kBaseWidth = 640, kBaseHeight = 736;
+    static constexpr int kBaseWidth = 640, kBaseHeight = 762;
 
 private:
     class AboutPanel;
@@ -89,8 +89,19 @@ private:
     std::array<DeckUI, 2> deckUI;
     LabelledSlider crossfade, panSpeed, panRange, outLevel, tempo, click;
     std::array<ModUI, 2> modUI;
-    juce::TextButton setupTab { "SETUP" }, modsTab { "MODS" }, tapButton { "TAP" };
-    bool modsPage = false;
+    juce::TextButton setupTab { "SETUP" }, modsTab { "MODS" }, cvTab { "CV" }, midiTab { "MIDI" }, tapButton { "TAP" };
+    int page = 0;                      // 0 setup, 1 mods, 2 cv, 3 midi
+    std::array<LabelledSlider, 8> cvSliders;     // per deck: V/Oct, Mix, Position, Size
+    LabelledSlider cvCrossfade;
+    std::array<LabelledSlider, 2> fitBeats;
+    std::array<LabelledCombo, 2> midiChannel;
+    std::array<juce::ToggleButton, 2> follow;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>, 2> followAtt;
+    juce::Label midiMonitor, midiHint;
+    std::array<juce::Label, 2> cvTag;           // "A" / "B" in front of each deck's CV rows
+    juce::String infoText;             // short message shown at the bottom (e.g. Fit tempo refused)
+    double infoUntil = 0.0;
+    uint32_t seenFitFail = 0;
     std::vector<double> tapTimes;     // message thread only
     LabelledCombo tempoSource, quantise;
     juce::Label routeLabel;

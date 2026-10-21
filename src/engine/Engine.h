@@ -42,6 +42,13 @@ namespace usp
         float gritIntensity = 0.2f;
         float gritMix = 0.33f;
         float gritCharacter = 0.0f;   // Filter mode only (resonance)
+
+        // CV-style inputs (the firmware's CV jacks; here automatable). Added to the knob values / modulators.
+        float cvPitch    = 0.0f;   // volts per octave, -5..+5 (Reel/Drift: continuous; Slice: applied at each trigger)
+        float cvMix      = 0.0f;   // -1..+1, added to Mix
+        float cvPosition = 0.0f;   // -1..+1, added to Position
+        float cvSize     = 0.0f;   // -1..+1, added to Size
+        int   fitBeats   = 4;      // 1..16, used by kActionFitTempo
     };
 
     // One of the two modulators. Upstream they only drive the Mod-out jack; here each one can be patched to
@@ -71,6 +78,7 @@ namespace usp
         bool  hostSync  = false;     // follow the host's tempo and beat position
         int   launchQuantise = 1;    // index 0..16 into the firmware's list (1/16, 1/4, 2/4 ... 16/4)
         float clickLevel = 0.0f;     // 0..1
+        float cvCrossfade = 0.0f;    // -1..+1, added to the crossfade
         ModParams mod[2];            // 0 = Mod A (follows Deck A's output), 1 = Mod B (follows Deck B's output)
     };
 
@@ -83,7 +91,7 @@ namespace usp
         double ppq = 0.0;            // quarter-note position at the start of the block
     };
 
-    // Rising-edge button presses, as bit flags. Deck A uses bits 0-7, Deck B bits 8-15.
+    // Rising-edge button presses, as bit flags. Deck A uses bits 0-15, Deck B bits 16-31.
     enum EngineAction : uint32_t
     {
         kActionRecord         = 1u << 0,   // arm / stop recording from the plug-in input
@@ -92,9 +100,12 @@ namespace usp
         kActionTrig           = 1u << 3,   // trigger (restarts playback; the firmware's gate input)
         kActionRecordInternal = 1u << 4,   // arm / stop recording from the OTHER deck's output
         kActionSeqArm         = 1u << 5,   // trigger sequencer: arm (then each Trig is recorded) / stop recording
-        kActionSeqClear       = 1u << 6    // trigger sequencer: clear
+        kActionSeqClear       = 1u << 6,   // trigger sequencer: clear
+        kActionTransportStart = 1u << 7,   // MIDI Start/Continue or host transport start: play the deck (if it holds a loop)
+        kActionTransportStop  = 1u << 8,   // MIDI Stop or host transport stop: stop the deck
+        kActionFitTempo       = 1u << 9    // set the tempo so the loop lasts DeckParams::fitBeats beats (firmware: Tap + Size, Slice)
     };
-    constexpr uint32_t deckAction (int deck, EngineAction a) { return (uint32_t) a << (deck * 8); }
+    constexpr uint32_t deckAction (int deck, EngineAction a) { return (uint32_t) a << (deck * 16); }
 
     struct DeckStatus
     {
@@ -117,6 +128,9 @@ namespace usp
         std::atomic<float>    tempoBpm { 120.0f };     // tempo the engine is actually using
         std::atomic<float>    modValue[2] { { 0.0f }, { 0.0f } };   // current modulator outputs, 0..1
         std::atomic<uint32_t> underruns { 0 };         // output frames the resampler could not supply
+        std::atomic<float>    fitBpm { 0.0f };         // tempo chosen by the last successful Fit tempo
+        std::atomic<uint32_t> fitSeq { 0 };            // counts successful Fit tempo actions
+        std::atomic<uint32_t> fitFailSeq { 0 };        // counts Fit tempo actions refused (no loop, or tempo outside 20..250 BPM)
     };
 
     class Engine
@@ -132,8 +146,11 @@ namespace usp
         int latencySamples() const;
 
         // Audio thread. in/out may be the same arrays. n may be any size >= 0.
+        // noteOn: optional int[2] (one per deck), a MIDI note number or -1. A note triggers the loop pitched by
+        // (note - 60) semitones, as in the firmware (CoreUI::_on_midi_note_on).
         void process (const float* inL, const float* inR, float* outL, float* outR, int n,
-                      const EngineParams& params, uint32_t actions, const HostTransport& host = HostTransport());
+                      const EngineParams& params, uint32_t actions, const HostTransport& host = HostTransport(),
+                      const int* noteOn = nullptr);
 
         const EngineStatus& status() const { return statusValues; }
 

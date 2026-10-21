@@ -59,7 +59,7 @@ public:
             "Includes code from Infrasonic Audio LLC and DaisySP (Electrosmith, MIT). "
             "Built with JUCE. This plug-in is licensed under the GNU AGPLv3; see "
             "LICENSE and THIRD-PARTY-LICENSES.txt that came with the download.\n\n"
-            "Milestone 6: both decks with Reel, Slice and Drift modes, Flux and Grit effects, two modulators that you can patch to a destination, a trigger sequencer per deck, routing, A/B crossfade, tempo (internal, host or tap) and launch quantise. MIDI control is not in yet.",
+            "Milestone 7: both decks with Reel, Slice and Drift modes, Flux and Grit effects, two modulators that you can patch to a destination, a trigger sequencer per deck, MIDI notes and CCs (firmware map), CV-style automation inputs, fit tempo to loop, routing, A/B crossfade, tempo (internal, host or tap) and launch quantise. Saving loops with the project is not in yet.",
             r.removeFromTop (r.getHeight() - 44), juce::Justification::topLeft, 20);
     }
 
@@ -137,17 +137,18 @@ void UnofficialSpotykachEditor::setupDeck (int d)
     ui.status.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (ui.status);
 
-    static const char* btnText[UnofficialSpotykachProcessor::kNumDeckButtons] = { "REC", "PLAY", "REV", "TRIG", "FROM", "SEQ", "CLEAR" };
+    static const char* btnText[UnofficialSpotykachProcessor::kNumDeckButtons] = { "REC", "PLAY", "REV", "TRIG", "FROM", "SEQ", "CLEAR", "FIT" };
     static const char* btnTip[UnofficialSpotykachProcessor::kNumDeckButtons] = {
         "Record from the plug-in input (press again to stop)", "Play / stop", "Play in reverse / stop",
         "Trigger the loop with the current settings",
         "Record the other deck's output into this deck (press again to stop)",
         "Trigger sequencer: press to arm, then tap TRIG to record a rhythm; press SEQ again to stop recording",
-        "Hold for 1.5 seconds to clear the trigger sequence" };
+        "Hold for 1.5 seconds to clear the trigger sequence",
+        "Set the tempo so this deck's loop lasts the chosen number of beats (Source becomes Internal)" };
     for (int i = 0; i < UnofficialSpotykachProcessor::kNumDeckButtons; ++i)
     {
         auto& b = ui.buttons[(size_t) i];
-        b.setButtonText (i == 4 ? juce::String ("FROM ") + (d == 0 ? "B" : "A") : juce::String (btnText[i]));
+        b.setButtonText (i == 4 ? juce::String ("FROM ") + (d == 0 ? "B" : "A") : i == 7 ? juce::String ("FIT ") + tag : juce::String (btnText[i]));
         b.setTooltip (btnTip[i]);
         const auto id = UnofficialSpotykachProcessor::deckId (d, UnofficialSpotykachProcessor::deckButtonBase (i));
         if (i == 6)
@@ -163,7 +164,8 @@ void UnofficialSpotykachEditor::setupDeck (int d)
         else
             b.onClick = [this, id] { pulse (id); };
         if (i == 5) b.setColour (juce::TextButton::buttonOnColourId, kRec);
-        addAndMakeVisible (b);
+        if (i < UnofficialSpotykachProcessor::kRowButtons) addAndMakeVisible (b);
+        else addChildComponent (b);
     }
 
     static const char* base[6] = { "position", "size", "pitch", "envelope", "mix", "feedback" };
@@ -316,18 +318,24 @@ void UnofficialSpotykachEditor::setupMod (int m)
 
 void UnofficialSpotykachEditor::showGlobalPage()
 {
-    const bool mods = modsPage;
-    for (auto* c : std::initializer_list<juce::Component*> { &routeLabel, &routeBox, &panSpeed.slider, &panSpeed.label, &panRange.slider,
-                                                             &panRange.label, &tempo.slider, &tempo.label, &tempoSource.box, &tempoSource.label,
-                                                             &quantise.box, &quantise.label, &click.slider, &click.label, &outLevel.slider,
-                                                             &outLevel.label, &tapButton })
-        c->setVisible (! mods);
+    auto vis = [] (std::initializer_list<juce::Component*> l, bool v) { for (auto* c : l) c->setVisible (v); };
+    const bool setup = page == 0, mods = page == 1, cv = page == 2, midi = page == 3;
+    vis ({ &routeLabel, &routeBox, &panSpeed.slider, &panSpeed.label, &panRange.slider, &panRange.label, &tempo.slider, &tempo.label,
+           &tempoSource.box, &tempoSource.label, &quantise.box, &quantise.label, &click.slider, &click.label, &outLevel.slider,
+           &outLevel.label, &tapButton, &fitBeats[0].slider, &fitBeats[0].label, &fitBeats[1].slider, &fitBeats[1].label,
+           &deckUI[0].buttons[7], &deckUI[1].buttons[7] }, setup);
     for (auto& ui : modUI)
-        for (auto* c : std::initializer_list<juce::Component*> { &ui.title, &ui.type.box, &ui.target.box, &ui.target.label, &ui.cycle.slider,
-                                                                 &ui.cycle.label, &ui.glow.slider, &ui.glow.label, &ui.sync })
-            c->setVisible (mods);
-    setupTab.setToggleState (! mods, juce::dontSendNotification);
+        vis ({ &ui.title, &ui.type.box, &ui.target.box, &ui.target.label, &ui.cycle.slider, &ui.cycle.label, &ui.glow.slider,
+               &ui.glow.label, &ui.sync }, mods);
+    for (auto& c : cvSliders) vis ({ &c.slider, &c.label }, cv);
+    vis ({ &cvCrossfade.slider, &cvCrossfade.label, &cvTag[0], &cvTag[1] }, cv);
+    for (int d = 0; d < 2; ++d)
+        vis ({ &midiChannel[(size_t) d].box, &midiChannel[(size_t) d].label, &follow[(size_t) d] }, midi);
+    vis ({ &midiMonitor, &midiHint }, midi);
+    setupTab.setToggleState (setup, juce::dontSendNotification);
     modsTab.setToggleState (mods, juce::dontSendNotification);
+    cvTab.setToggleState (cv, juce::dontSendNotification);
+    midiTab.setToggleState (midi, juce::dontSendNotification);
     repaint();
 }
 
@@ -381,14 +389,57 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     addAndMakeVisible (tapButton);
     tapButton.setTooltip ("Tap the tempo (sets Source to Internal)");
     tapButton.onClick = [this] { tap(); };
-    for (auto* b : { &setupTab, &modsTab })
+    for (auto* b : { &setupTab, &modsTab, &cvTab, &midiTab })
     {
         b->setColour (juce::TextButton::buttonOnColourId, kAccent);
         b->setColour (juce::TextButton::textColourOnId, kBg);
         addAndMakeVisible (*b);
     }
-    setupTab.onClick = [this] { modsPage = false; showGlobalPage(); resized(); };
-    modsTab.onClick  = [this] { modsPage = true;  showGlobalPage(); resized(); };
+    setupTab.onClick = [this] { page = 0; showGlobalPage(); resized(); };
+    modsTab.onClick  = [this] { page = 1; showGlobalPage(); resized(); };
+    cvTab.onClick    = [this] { page = 2; showGlobalPage(); resized(); };
+    midiTab.onClick  = [this] { page = 3; showGlobalPage(); resized(); };
+
+    // CV page: the firmware's CV inputs as automatable parameters.
+    {
+        static const char* cvId[4]   = { "cvPitch", "cvMix", "cvPosition", "cvSize" };
+        static const char* cvText[4] = { "V/Oct", "Mix", "Position", "Size" };
+        for (int d = 0; d < 2; ++d)
+            for (int i = 0; i < 4; ++i)
+            {
+                auto& c = cvSliders[(size_t) (d * 4 + i)];
+                addLabelled (c, UnofficialSpotykachProcessor::deckId (d, cvId[i]), cvText[i], juce::Slider::LinearHorizontal);
+                c.slider.setDoubleClickReturnValue (true, 0.0);
+            }
+        addLabelled (cvCrossfade, "cvCrossfade", "Crossfade CV", juce::Slider::LinearHorizontal);
+        cvCrossfade.slider.setDoubleClickReturnValue (true, 0.0);
+    }
+    for (int d = 0; d < 2; ++d)
+    {
+        addLabelled (fitBeats[(size_t) d], UnofficialSpotykachProcessor::deckId (d, "fitBeats"), "beats", juce::Slider::LinearHorizontal);
+        fitBeats[(size_t) d].slider.textFromValueFunction = [] (double v) { return juce::String (juce::roundToInt ((float) v)) + (juce::roundToInt ((float) v) == 1 ? " beat" : " beats"); };
+        fitBeats[(size_t) d].slider.updateText();
+        fitBeats[(size_t) d].slider.setTooltip ("Fit tempo to loop: the loop will last this many beats");
+        addCombo (midiChannel[(size_t) d], UnofficialSpotykachProcessor::deckId (d, "midiChannel"), d == 0 ? "Deck A channel" : "Deck B channel");
+        follow[(size_t) d].setButtonText ("Follow transport");
+        follow[(size_t) d].setColour (juce::ToggleButton::textColourId, kText);
+        follow[(size_t) d].setColour (juce::ToggleButton::tickColourId, kAccent);
+        follow[(size_t) d].setTooltip ("Host play/stop (and MIDI Start/Continue/Stop) plays and stops this deck");
+        addAndMakeVisible (follow[(size_t) d]);
+        followAtt[(size_t) d] = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, UnofficialSpotykachProcessor::deckId (d, "transportFollow"), follow[(size_t) d]);
+    }
+    for (int d = 0; d < 2; ++d)
+    {
+        cvTag[(size_t) d].setText (d == 0 ? "A" : "B", juce::dontSendNotification);
+        cvTag[(size_t) d].setColour (juce::Label::textColourId, kAccent);
+        addChildComponent (cvTag[(size_t) d]);
+    }
+    midiMonitor.setColour (juce::Label::textColourId, kAccent);
+    midiHint.setColour (juce::Label::textColourId, kDim);
+    midiHint.setText ("Notes trigger the loop (note 60 = normal pitch). CCs follow the Spotykach firmware's list; see the README.", juce::dontSendNotification);
+    addAndMakeVisible (midiMonitor);
+    addAndMakeVisible (midiHint);
+    seenFitFail = proc.engineStatus().fitFailSeq.load();
 
     routeLabel.setText ("Routing", juce::dontSendNotification);
     routeLabel.setColour (juce::Label::textColourId, kText);
@@ -455,7 +506,7 @@ void UnofficialSpotykachEditor::paint (juce::Graphics& g)
         }
     }
 
-    if (modsPage)
+    if (page == 1)
         for (size_t m = 0; m < 2; ++m)
         {
             g.setColour (kPanel);
@@ -470,7 +521,8 @@ void UnofficialSpotykachEditor::paint (juce::Graphics& g)
     g.fillRoundedRectangle (meterArea.withWidth (meterArea.getWidth() * juce::jlimit (0.0f, 1.0f, meterLevel)), 3.0f * scale);
     g.setColour (kDim);
     g.setFont (font (11.0f));
-    g.drawText ("input level", meterArea.translated (0.0f, 16.0f * scale).toNearestInt(), juce::Justification::left);
+    g.drawText (infoText.isNotEmpty() ? infoText : juce::String ("input level"), meterArea.translated (0.0f, 16.0f * scale).toNearestInt(),
+                juce::Justification::left);
 }
 
 void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, float s)
@@ -493,9 +545,9 @@ void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, fl
     auto btnRow = r.removeFromTop (juce::roundToInt (28 * s));
     const int gap = juce::roundToInt (6 * s);
     const int bw = (btnRow.getWidth() - 6 * gap) / 7;
-    for (auto& b : ui.buttons)
+    for (int i = 0; i < UnofficialSpotykachProcessor::kRowButtons; ++i)
     {
-        b.setBounds (btnRow.removeFromLeft (bw));
+        ui.buttons[(size_t) i].setBounds (btnRow.removeFromLeft (bw));
         btnRow.removeFromLeft (gap);
     }
 
@@ -584,19 +636,22 @@ void UnofficialSpotykachEditor::resized()
     };
     {
         auto rowX = r.removeFromTop (rowH);
-        auto tabs = rowX.removeFromRight (juce::roundToInt (150 * s));
-        setupTab.setBounds (tabs.removeFromLeft (juce::roundToInt (72 * s)));
-        tabs.removeFromLeft (juce::roundToInt (6 * s));
-        modsTab.setBounds (tabs);
+        auto tabs = rowX.removeFromRight (juce::roundToInt (236 * s));
+        const int tw = (tabs.getWidth() - 3 * juce::roundToInt (4 * s)) / 4;
+        for (auto* t : { &setupTab, &modsTab, &cvTab, &midiTab })
+        {
+            t->setBounds (tabs.removeFromLeft (tw));
+            tabs.removeFromLeft (juce::roundToInt (4 * s));
+        }
         rowX.removeFromRight (juce::roundToInt (10 * s));
         setLs (crossfade, rowX, 100, 110);
     }
     r.removeFromTop (juce::roundToInt (6 * s));
 
     // The page area below the crossfade row holds either the setup rows or the two modulators.
-    auto page = r.removeFromTop (juce::roundToInt (122 * s));
+    auto pageArea = r.removeFromTop (juce::roundToInt (148 * s));
     {
-        auto p = page;
+        auto p = pageArea;
         auto rowR = p.removeFromTop (rowH);
         routeLabel.setFont (font (13.0f));
         routeLabel.setBounds (rowR.removeFromLeft (juce::roundToInt (56 * s)));
@@ -626,9 +681,56 @@ void UnofficialSpotykachEditor::resized()
         setLs (click, rowO.removeFromLeft (rowO.getWidth() * 42 / 100), 44, 52);
         rowO.removeFromLeft (juce::roundToInt (10 * s));
         setLs (outLevel, rowO, 86, 64);
+        p.removeFromTop (juce::roundToInt (4 * s));
+
+        auto rowF = p.removeFromTop (rowH);
+        for (size_t d = 0; d < 2; ++d)
+        {
+            auto cell = d == 0 ? rowF.removeFromLeft (rowF.getWidth() / 2 - juce::roundToInt (5 * s)) : rowF;
+            if (d == 0) rowF.removeFromLeft (juce::roundToInt (10 * s));
+            deckUI[d].buttons[7].setBounds (cell.removeFromLeft (juce::roundToInt (64 * s)).reduced (0, juce::roundToInt (1 * s)));
+            cell.removeFromLeft (juce::roundToInt (6 * s));
+            fitBeats[d].label.setBounds ({});
+            fitBeats[d].slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, juce::roundToInt (62 * s), juce::roundToInt (20 * s));
+            fitBeats[d].slider.setBounds (cell);
+        }
+    }
+    {   // CV page
+        auto p = pageArea;
+        for (int d = 0; d < 2; ++d)
+            for (int k = 0; k < 2; ++k)
+            {
+                auto row = p.removeFromTop (rowH);
+                auto tag = row.removeFromLeft (juce::roundToInt (22 * s));
+                cvTag[(size_t) d].setFont (font (13.0f, true));
+                if (k == 0) cvTag[(size_t) d].setBounds (tag);
+                auto left = row.removeFromLeft (row.getWidth() / 2 - juce::roundToInt (5 * s));
+                row.removeFromLeft (juce::roundToInt (10 * s));
+                setLs (cvSliders[(size_t) (d * 4 + k * 2)], left, 56, 76);
+                setLs (cvSliders[(size_t) (d * 4 + k * 2 + 1)], row, 56, 60);
+                p.removeFromTop (juce::roundToInt (4 * s));
+            }
+        setLs (cvCrossfade, p.removeFromTop (rowH), 100, 76);
+    }
+    {   // MIDI page
+        auto p = pageArea;
+        for (int d = 0; d < 2; ++d)
+        {
+            auto row = p.removeFromTop (rowH);
+            midiChannel[(size_t) d].label.setFont (font (13.0f));
+            midiChannel[(size_t) d].label.setBounds (row.removeFromLeft (juce::roundToInt (110 * s)));
+            midiChannel[(size_t) d].box.setBounds (row.removeFromLeft (juce::roundToInt (70 * s)).reduced (0, juce::roundToInt (1 * s)));
+            row.removeFromLeft (juce::roundToInt (14 * s));
+            follow[(size_t) d].setBounds (row.removeFromLeft (juce::roundToInt (170 * s)));
+            p.removeFromTop (juce::roundToInt (4 * s));
+        }
+        midiMonitor.setFont (font (13.0f));
+        midiMonitor.setBounds (p.removeFromTop (rowH));
+        midiHint.setFont (font (11.0f));
+        midiHint.setBounds (p.removeFromTop (juce::roundToInt (36 * s)));
     }
     {
-        auto p = page;
+        auto p = pageArea;
         for (size_t m = 0; m < 2; ++m)
         {
             auto& ui = modUI[m];
@@ -688,6 +790,35 @@ void UnofficialSpotykachEditor::timerCallback()
             pulse (UnofficialSpotykachProcessor::deckId ((int) d, "seqClear"));
         }
         ui.buttons[6].setButtonText (ui.clearFired ? "CLEARED" : ui.clearDownAt > 0.0 ? "HOLD..." : "CLEAR");
+    }
+
+    // Fit tempo refused by the engine (no loop, or the tempo would fall outside 20 to 250 BPM)
+    {
+        const uint32_t f = st.fitFailSeq.load();
+        const double now = juce::Time::getMillisecondCounterHiRes();
+        if (f != seenFitFail)
+        {
+            seenFitFail = f;
+            infoText = "Fit tempo refused: it needs a recorded loop and a tempo between 20 and 250 BPM";
+            infoUntil = now + 5000.0;
+        }
+        else if (infoText.isNotEmpty() && now > infoUntil) infoText = {};
+    }
+    if (page == 3)
+    {
+        juce::String t = "Last note: ";
+        const int n = proc.lastNote.load(), c = proc.lastCc.load();
+        t += n < 0 ? juce::String ("none") : juce::String (n) + " (ch " + juce::String (proc.lastNoteChannel.load()) + ")";
+        t += "     Last CC: ";
+        t += c < 0 ? juce::String ("none") : juce::String (c) + " = " + juce::String (proc.lastCcValue.load()) + " (ch " + juce::String (proc.lastCcChannel.load()) + ")";
+        t += "     messages: " + juce::String ((int) proc.midiEventCount.load());
+        midiMonitor.setText (t, juce::dontSendNotification);
+    }
+    for (size_t d = 0; d < 2; ++d)
+    {
+        using P = UnofficialSpotykachProcessor;
+        const int mode = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId ((int) d, "mode"))->load());
+        deckUI[d].buttons[7].setEnabled (mode == 1 && ! st.deck[d].empty.load());      // as on the hardware: Slice mode, with a loop
     }
 
     for (size_t m = 0; m < 2; ++m)

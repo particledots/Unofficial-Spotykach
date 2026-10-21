@@ -6,11 +6,12 @@
 #include <atomic>
 #include "engine/Engine.h"
 
-class UnofficialSpotykachProcessor : public juce::AudioProcessor
+class UnofficialSpotykachProcessor : public juce::AudioProcessor,
+                                     private juce::Timer
 {
 public:
     UnofficialSpotykachProcessor();
-    ~UnofficialSpotykachProcessor() override = default;
+    ~UnofficialSpotykachProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -43,8 +44,16 @@ public:
     std::atomic<uint32_t> midiNoteOnCount { 0 };
     std::atomic<uint32_t> midiEventCount  { 0 };
     std::atomic<int>      lastNote        { -1 };
+    std::atomic<int>      lastNoteChannel { 0 };
+    std::atomic<int>      lastCc          { -1 };
+    std::atomic<int>      lastCcValue     { 0 };
+    std::atomic<int>      lastCcChannel   { 0 };
     std::atomic<double>   hostSampleRate  { 0.0 };
     std::atomic<int>      hostBlockSize   { 0 };
+
+    // Message thread: moves parameters changed by MIDI (and the Fit tempo result) into the real parameters.
+    // Called by the 30 Hz timer; public so the headless test can call it without a message loop.
+    void applyPendingMidi();
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -55,10 +64,11 @@ public:
     // Deck B uses a "b_" prefix.
     static juce::String deckId (int deck, const juce::String& base) { return deck == 0 ? base : "b_" + base; }
 
-    static constexpr int kNumDeckButtons = 7;   // record, play, reverse, trig, recInternal, seqArm, seqClear
+    static constexpr int kNumDeckButtons = 8;   // record, play, reverse, trig, recInternal, seqArm, seqClear, fit
+    static constexpr int kRowButtons = 7;       // the first seven sit in the deck's button row; Fit tempo is on the setup page
     static const char* deckButtonBase (int i)
     {
-        static const char* names[kNumDeckButtons] = { "record", "play", "reverse", "trig", "recInternal", "seqArm", "seqClear" };
+        static const char* names[kNumDeckButtons] = { "record", "play", "reverse", "trig", "recInternal", "seqArm", "seqClear", "fit" };
         return names[i];
     }
 
@@ -68,6 +78,7 @@ public:
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+    void timerCallback() override;      // message thread: MIDI-moved parameters -> host, Fit tempo result -> Tempo
 
     usp::Engine engine;
 
@@ -81,6 +92,9 @@ private:
         std::atomic<float>* sliceOffset = nullptr; std::atomic<float>* envLength = nullptr; std::atomic<float>* window = nullptr;
         std::atomic<float>* position = nullptr; std::atomic<float>* size = nullptr; std::atomic<float>* pitch = nullptr;
         std::atomic<float>* envelope = nullptr; std::atomic<float>* mix = nullptr;  std::atomic<float>* feedback = nullptr;
+        std::atomic<float>* cvPitch = nullptr; std::atomic<float>* cvMix = nullptr;
+        std::atomic<float>* cvPosition = nullptr; std::atomic<float>* cvSize = nullptr;
+        std::atomic<float>* transportFollow = nullptr; std::atomic<float>* midiChannel = nullptr; std::atomic<float>* fitBeats = nullptr;
         std::atomic<float>* button[kNumDeckButtons] = {};
         bool was[kNumDeckButtons] = {};            // audio thread only
     };
@@ -97,6 +111,24 @@ private:
     std::atomic<float>* pQuantise = nullptr;
     std::atomic<float>* pClick = nullptr;
     std::atomic<float>* pOutLevel = nullptr;
+    std::atomic<float>* pCvCrossfade = nullptr;
+
+    // MIDI CC -> parameter. The audio thread writes the value straight into the parameter's processing value (so it
+    // is heard at once) and marks the slot dirty; the message thread (timerCallback) then moves the real parameter
+    // so the window, the host and the saved state follow. Until it has, the audio thread re-asserts the value each
+    // block. Slot [0] = Deck A, [1] = Deck B, [2] = global (crossfade).
+    struct MidiSlot
+    {
+        std::atomic<float> latest { 0.0f };
+        std::atomic<uint32_t> seq { 0 }, applied { 0 };
+    };
+    MidiSlot ccSlots[3][128];
+    std::atomic<float>* ccRaw[3][128] = {};
+    juce::RangedAudioParameter* ccParam[3][128] = {};
+    bool ccIsBool[3][128] = {};
+    uint32_t lastFitSeq = 0;           // message thread
+    bool hostWasPlaying = false;       // audio thread
+    bool hostKnown = false;
 
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outGain;
 
