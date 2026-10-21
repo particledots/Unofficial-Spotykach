@@ -329,7 +329,7 @@ I will build it this way unless you tell me otherwise (decision D3).
 | M6 | MIDI map (firmware's), automation inputs. |
 | M7 | UI to the mockup; plug-in state save. |
 | M8 | Loop files (LOAD/SAVE) and persistence by file link, trims (done in v0.7.0, see decisions D53-D58). |
-| M9 | BUILT (v0.8.0): window redesign after the original mockup (D45, D59), licence/credits/About review (D60). Awaiting test. |
+| M9 | ACCEPTED (v0.8.0): window redesign after the original mockup (D45, D59), licence/credits/About review (D60). |
 
 Order and scope will change as the code teaches us things.
 
