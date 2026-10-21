@@ -21,6 +21,11 @@ jobs:
           cmake --build build --target engine_test -j4
           ./build/engine_test
 
+      - name: Loop file tests (WAV in/out, links and search, loop hand-over to the audio thread, trims)
+        run: |
+          cmake --build build --target loop_test -j4
+          ./build/loop_test
+
       - name: Build AU + VST3
         run: cmake --build build --target UnofficialSpotykach_AU UnofficialSpotykach_VST3 -j4
 

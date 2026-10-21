@@ -21,11 +21,24 @@ Built with [JUCE](https://juce.com).
 
 ## Status
 
-Milestone 7: both decks of the Spotykach looper with Reel, Slice and Drift modes, Flux (delay) and Grit
+Milestone 8: both decks of the Spotykach looper with Reel, Slice and Drift modes, Flux (delay) and Grit
 (drive, reduce, filter) effects, two modulators that can be patched to a destination, a trigger
 sequencer per deck, MIDI notes and CCs, CV-style automation inputs, fit tempo to loop, A/B crossfade,
-the three routing modes, tempo (internal, host sync or tap), launch quantise and a resizable window.
-Saving loops with the project is not in yet.
+the three routing modes, tempo (internal, host sync or tap), launch quantise, loop files, trims and a resizable window.
+
+## Loop files and projects
+
+Open the **FILES** tab. **LOAD...** puts a WAV file into a deck (any sample rate, mono or stereo, 8 to 32-bit; converted to
+48 kHz and cut to 42 s; cue points in the file become slice points). **SAVE...** writes the deck's loop as a WAV file.
+**Nothing is saved automatically.**
+
+A project does not contain the audio. It keeps a link to the file (its place, size and a fingerprint). When you open the
+project, each linked deck loads its file again; if the file was moved or renamed inside the **home folder**
+(`~/Music/Unofficial Spotykach` unless you change it with FOLDER...), it is found again. A deck you recorded and did
+not save shows "Not saved to a file" and does not come back with the project. LOAD and SAVE finish while the host is
+running audio (Logic keeps running when stopped).
+
+The FILES tab also has **In** and **Out** trims for each deck (-24 to +12 dB).
 
 ## MIDI
 

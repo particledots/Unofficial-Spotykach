@@ -63,6 +63,11 @@ public:
   Route route() const { return _route; }
 
   void set_click_mix(const float value) { _click_mix = value; }
+
+  // MODIFIED for Unofficial Spotykach (2026): per-deck input and output trims (linear gain, smoothed per
+  // sample inside process()). The hardware has analog trimmers here; the firmware has no equivalent.
+  void set_trim_in(const Deck::Ref deck, const float gain) { _trim_in[deck] = gain; }
+  void set_trim_out(const Deck::Ref deck, const float gain) { _trim_out[deck] = gain; }
   
   void prepare();
   void process(const float* const* in, float** out, size_t size);
@@ -90,6 +95,12 @@ private:
   float _click_mix;
   float _mix;
   float _mix_mod;
+
+  // MODIFIED for Unofficial Spotykach (2026): trims (see set_trim_in / set_trim_out).
+  float _trim_in[Deck::Count] = { 1.f, 1.f };
+  float _trim_out[Deck::Count] = { 1.f, 1.f };
+  float _trim_in_now[Deck::Count] = { 1.f, 1.f };
+  float _trim_out_now[Deck::Count] = { 1.f, 1.f };
 };
 
 };

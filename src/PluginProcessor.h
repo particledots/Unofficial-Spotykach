@@ -4,7 +4,10 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
+#include <deque>
+#include <functional>
 #include "engine/Engine.h"
+#include "engine/LoopLibrary.h"
 
 class UnofficialSpotykachProcessor : public juce::AudioProcessor,
                                      private juce::Timer
@@ -55,6 +58,25 @@ public:
     // Called by the 30 Hz timer; public so the headless test can call it without a message loop.
     void applyPendingMidi();
 
+    // ---- Loop files (message thread). A deck's loop can be loaded from a WAV file or saved to one. The project
+    // keeps only a link to the file, never the audio (decisions D36 and D53). Nothing is saved automatically.
+    enum class FileState { empty, unsaved, linked, loading, saving, missing };
+    struct FileInfo
+    {
+        FileState state = FileState::empty;
+        juce::String name;      // file name, when there is a link
+        juce::String note;      // one line for the window
+        bool isError = false;   // the note reports something that went wrong
+    };
+    FileInfo deckFileInfo (int deck) const;
+    void loadLoopFile (int deck, const juce::File& file);
+    void saveLoopFile (int deck, const juce::File& file);
+    juce::File homeFolder() const;
+    void setHomeFolder (const juce::File& folder);
+    static juce::File defaultHomeFolder();
+    void pollLoopFiles();             // 30 Hz timer work; public so the headless test can call it
+    bool loopFilesBusy() const;       // a load or save is still running
+
     juce::AudioProcessorValueTreeState apvts;
 
     // Mapping of Reel-mode pitch (0..1) to playback speed, as in the firmware (generator.cpp mapped_speed()).
@@ -82,6 +104,42 @@ private:
 
     usp::Engine engine;
 
+    // Loop files: everything below is touched on the message thread only (the worker thread gets copies).
+    struct DeckFile
+    {
+        FileState state = FileState::empty;
+        usp::LoopLink link;               // kept while the project should remember the file (linked or missing)
+        juce::String name, note;
+        bool isError = false;
+        uint32_t linkedSeq = 0;           // the deck's contentSeq when the file and the loop were last the same
+        uint32_t gen = 0;                 // operation number; results of older operations are ignored
+        uint32_t startedMs = 0;
+        // an operation in flight
+        std::shared_ptr<usp::LoopTransfer> queuedLoad;     // decoded audio waiting to be handed to the engine
+        bool loadSubmitted = false, saveSubmitted = false;
+        uint32_t loadGen = 0, saveGen = 0;                 // operation numbers of the transfers handed to the engine
+        uint32_t saveSnapshotSeq = 0;
+        usp::LoopLink pendLink;
+        juce::String pendName, pendNote;
+        juce::String saveTarget;
+        FileState backupState = FileState::empty;
+        usp::LoopLink backupLink; juce::String backupName, backupNote; uint32_t backupSeq = 0;
+    };
+    class Worker;
+    std::unique_ptr<Worker> worker;
+    mutable juce::CriticalSection fileLock;
+    DeckFile files[2];
+    juce::String homePath;
+    std::deque<std::function<void()>> uiQueue;      // results from the worker thread, run by the timer
+    juce::CriticalSection uiLock;
+    void postUi (std::function<void()>);
+    void beginOp (int deck, FileState state, const juce::String& note);
+    void failOp (int deck, uint32_t gen, const juce::String& message);
+    void startRestore (int deck, const usp::LoopLink& link);
+    void queueDecoded (int deck, uint32_t gen, std::vector<uint8_t>&& bytes, const usp::LoopLink& link, const juce::String& prefixNote, bool isRestore);   // worker thread
+    void markMissing (int deck, uint32_t gen, const usp::LoopLink& link, const juce::String& message);
+    juce::File settingsFile() const;
+
     struct DeckPtrs
     {
         std::atomic<float>* mode = nullptr; std::atomic<float>* pitchSnap = nullptr;
@@ -92,6 +150,7 @@ private:
         std::atomic<float>* sliceOffset = nullptr; std::atomic<float>* envLength = nullptr; std::atomic<float>* window = nullptr;
         std::atomic<float>* position = nullptr; std::atomic<float>* size = nullptr; std::atomic<float>* pitch = nullptr;
         std::atomic<float>* envelope = nullptr; std::atomic<float>* mix = nullptr;  std::atomic<float>* feedback = nullptr;
+        std::atomic<float>* inTrim = nullptr; std::atomic<float>* outTrim = nullptr;
         std::atomic<float>* cvPitch = nullptr; std::atomic<float>* cvMix = nullptr;
         std::atomic<float>* cvPosition = nullptr; std::atomic<float>* cvSize = nullptr;
         std::atomic<float>* transportFollow = nullptr; std::atomic<float>* midiChannel = nullptr; std::atomic<float>* fitBeats = nullptr;

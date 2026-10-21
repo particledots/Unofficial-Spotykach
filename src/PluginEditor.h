@@ -15,7 +15,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int kBaseWidth = 640, kBaseHeight = 762;
+    static constexpr int kBaseWidth = 640, kBaseHeight = 778;
 
 private:
     class AboutPanel;
@@ -89,8 +89,20 @@ private:
     std::array<DeckUI, 2> deckUI;
     LabelledSlider crossfade, panSpeed, panRange, outLevel, tempo, click;
     std::array<ModUI, 2> modUI;
-    juce::TextButton setupTab { "SETUP" }, modsTab { "MODS" }, cvTab { "CV" }, midiTab { "MIDI" }, tapButton { "TAP" };
-    int page = 0;                      // 0 setup, 1 mods, 2 cv, 3 midi
+    juce::TextButton setupTab { "SETUP" }, modsTab { "MODS" }, cvTab { "CV" }, midiTab { "MIDI" }, filesTab { "FILES" }, tapButton { "TAP" };
+    int page = 0;                      // 0 setup, 1 mods, 2 cv, 3 midi, 4 files
+
+    // FILES page: loop files per deck, the home folder and the four trims.
+    std::array<juce::TextButton, 2> loadButton, saveButton;
+    std::array<juce::Label, 2> fileTag, fileStatus;
+    juce::TextButton folderButton { "FOLDER..." };
+    juce::Label folderLabel;
+    std::array<LabelledSlider, 4> trimSliders;   // per deck: input, output
+    std::unique_ptr<juce::FileChooser> chooser;
+    void chooseLoad (int deck);
+    void chooseSave (int deck);
+    void chooseFolder();
+    void updateFilePage();
     std::array<LabelledSlider, 8> cvSliders;     // per deck: V/Oct, Mix, Position, Size
     LabelledSlider cvCrossfade;
     std::array<LabelledSlider, 2> fitBeats;

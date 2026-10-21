@@ -145,7 +145,7 @@ int main()
         {
             std::unique_ptr<juce::AudioProcessorEditor> e4 (proc.createEditor());
             int found = 0;
-            for (const char* name : { "MODS", "CV", "MIDI", "SETUP" })
+            for (const char* name : { "MODS", "CV", "MIDI", "FILES", "SETUP" })
             {
                 for (int i = 0; i < e4->getNumChildComponents(); ++i)
                     if (auto* b = dynamic_cast<juce::TextButton*> (e4->getChildComponent (i)))
@@ -159,7 +159,7 @@ int main()
                         if (os.openedOk()) { os.setPosition (0); os.truncate(); juce::PNGImageFormat().writeImageToStream (snap, os); }
                     }
             }
-            CHECK (found == 4);
+            CHECK (found == 5);
         }
 
         // Closing and reopening the window must restore the last size.
@@ -208,6 +208,171 @@ int main()
         juce::MidiBuffer ch1; ch1.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
         std::printf ("midi channel 3: idle rms L %.4f R %.4f; after note on ch 3: L %.4f R %.4f\n", quiet.first, quiet.second, hit.first, hit.second);
         CHECK (hit.second > 0.02);        // Deck B (right) plays
+    }
+    {   // Loop files through the real processor: save, project state, restore, moved file, missing file, load, unsaved
+        char tmpl[] = "/tmp/usp_smoke_XXXXXX";
+        const char* made = mkdtemp (tmpl);
+        CHECK (made != nullptr);
+        const juce::File dir (made != nullptr ? made : "/tmp");
+        const juce::File oldHome = UnofficialSpotykachProcessor::defaultHomeFolder();
+
+        auto make = [&] (UnofficialSpotykachProcessor& p)
+        {
+            p.setPlayConfigDetails (2, 2, 48000.0, 512);
+            p.prepareToPlay (48000.0, 512);
+            p.setHomeFolder (dir);
+        };
+        double ph = 0;
+        auto block = [&] (UnofficialSpotykachProcessor& p, float amp)
+        {
+            juce::AudioBuffer<float> b (2, 512);
+            juce::MidiBuffer none;
+            for (int i = 0; i < 512; ++i) { const float v = amp * (float) std::sin (ph); ph += 2.0 * 3.14159265358979 * 220.0 / 48000.0; b.setSample (0, i, v); b.setSample (1, i, v); }
+            p.processBlock (b, none);
+            double e = 0;
+            for (int i = 0; i < 512; ++i) e += b.getSample (0, i) * b.getSample (0, i);
+            return std::sqrt (e / 512.0);
+        };
+        auto pump = [&] (UnofficialSpotykachProcessor& p)
+        {
+            for (int i = 0; i < 3000 && (i < 5 || p.loopFilesBusy()); ++i) { block (p, 0.0f); p.pollLoopFiles(); juce::Thread::sleep (2); }
+            for (int i = 0; i < 20; ++i) { block (p, 0.0f); p.pollLoopFiles(); }
+        };
+        auto setP = [&] (UnofficialSpotykachProcessor& p, const char* id, float real) { auto* q = p.apvts.getParameter (id); q->setValueNotifyingHost (q->convertTo0to1 (real)); };
+        using FS = UnofficialSpotykachProcessor::FileState;
+
+        UnofficialSpotykachProcessor a;
+        make (a);
+        setP (a, "mix", 1.0f);
+        setP (a, "record", 1.0f); block (a, 0.4f); setP (a, "record", 0.0f); block (a, 0.4f);
+        for (int i = 0; i < 100; ++i) block (a, 0.4f);
+        setP (a, "play", 1.0f); block (a, 0.4f); setP (a, "play", 0.0f); block (a, 0.4f);   // Play ends the recording
+        pump (a);
+        CHECK (! a.engineStatus().deck[0].empty.load());
+        CHECK (a.deckFileInfo (0).state == FS::unsaved);
+        const auto frames = a.engineStatus().deck[0].loopFrames.load();
+
+        const auto target = dir.getChildFile ("sub").getChildFile ("saved.wav");
+        a.saveLoopFile (0, target);
+        pump (a);
+        auto info = a.deckFileInfo (0);
+        std::printf ("save: state %d, name '%s', note '%s', file %lld bytes\n", (int) info.state, info.name.toRawUTF8(), info.note.toRawUTF8(), (long long) target.getSize());
+        CHECK (info.state == FS::linked && info.name == "saved.wav");
+        CHECK (target.getSize() > (juce::int64) frames * 8);
+
+        juce::MemoryBlock state;
+        a.getStateInformation (state);
+        {
+            auto xml = juce::AudioProcessor::getXmlFromBinary (state.getData(), (int) state.getSize());
+            CHECK (xml != nullptr && xml->getChildByName ("LOOPFILES") != nullptr && xml->getChildByName ("LOOPFILES")->getNumChildElements() == 1);
+            CHECK (state.getSize() < 20000);          // the project holds a link, not the audio
+        }
+
+        {   // A new instance (a project opened) gets the loop back from the file.
+            UnofficialSpotykachProcessor b;
+            make (b);
+            setP (b, "mix", 1.0f);
+            b.setStateInformation (state.getData(), (int) state.getSize());
+            pump (b);
+            info = b.deckFileInfo (0);
+            std::printf ("restore: state %d, '%s', %u frames (saved %u)\n", (int) info.state, info.note.toRawUTF8(), (unsigned) b.engineStatus().deck[0].loopFrames.load(), (unsigned) frames);
+            CHECK (info.state == FS::linked);
+            CHECK (b.engineStatus().deck[0].loopFrames.load() == frames);
+            CHECK (b.deckFileInfo (1).state == FS::empty);
+            setP (b, "play", 1.0f); block (b, 0.0f); setP (b, "play", 0.0f);
+            double e = 0;
+            for (int i = 0; i < 40; ++i) e = block (b, 0.0f);
+            std::printf ("  restored loop plays at rms %.3f\n", e);
+            CHECK (e > 0.05);
+        }
+
+        // Moved and renamed inside the home folder: found by its fingerprint.
+        const auto moved = dir.getChildFile ("elsewhere").getChildFile ("renamed.wav");
+        moved.getParentDirectory().createDirectory();
+        CHECK (target.moveFileTo (moved));
+        {
+            UnofficialSpotykachProcessor c;
+            make (c);
+            c.setStateInformation (state.getData(), (int) state.getSize());
+            pump (c);
+            info = c.deckFileInfo (0);
+            std::printf ("moved: state %d, name '%s', note '%s'\n", (int) info.state, info.name.toRawUTF8(), info.note.toRawUTF8());
+            CHECK (info.state == FS::linked && info.name == "renamed.wav" && info.note.contains ("new place"));
+            juce::MemoryBlock again;
+            c.getStateInformation (again);                       // the project now remembers the new place
+            UnofficialSpotykachProcessor c2;
+            make (c2);
+            c2.setStateInformation (again.getData(), (int) again.getSize());
+            pump (c2);
+            CHECK (c2.deckFileInfo (0).state == FS::linked && ! c2.deckFileInfo (0).note.contains ("new place"));
+        }
+
+        // Missing: reported, the link is kept for next time, nothing is loaded.
+        CHECK (moved.deleteFile());
+        {
+            UnofficialSpotykachProcessor m;
+            make (m);
+            m.setStateInformation (state.getData(), (int) state.getSize());
+            pump (m);
+            info = m.deckFileInfo (0);
+            std::printf ("missing: state %d, '%s'\n", (int) info.state, info.note.toRawUTF8());
+            CHECK (info.state == FS::missing && info.isError && m.engineStatus().deck[0].empty.load());
+            juce::MemoryBlock again;
+            m.getStateInformation (again);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (again.getData(), (int) again.getSize());
+            CHECK (xml != nullptr && xml->getChildByName ("LOOPFILES") != nullptr && xml->getChildByName ("LOOPFILES")->getNumChildElements() == 1);
+        }
+
+        // LOAD of an ordinary file (44.1 kHz, mono, 16-bit) into Deck B.
+        {
+            const auto wav = dir.getChildFile ("plain.wav");
+            {   // a plain 16-bit mono 44.1 kHz WAV, written by hand
+                std::vector<unsigned char> bytes;
+                auto w32 = [&] (unsigned v) { for (int k = 0; k < 4; ++k) bytes.push_back ((unsigned char) (v >> (8 * k))); };
+                auto w16 = [&] (unsigned v) { bytes.push_back ((unsigned char) v); bytes.push_back ((unsigned char) (v >> 8)); };
+                const unsigned n = 44100;
+                for (char c : { 'R', 'I', 'F', 'F' }) bytes.push_back ((unsigned char) c);
+                w32 (36 + n * 2);
+                for (char c : { 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ' }) bytes.push_back ((unsigned char) c);
+                w32 (16); w16 (1); w16 (1); w32 (44100); w32 (44100 * 2); w16 (2); w16 (16);
+                for (char c : { 'd', 'a', 't', 'a' }) bytes.push_back ((unsigned char) c);
+                w32 (n * 2);
+                for (unsigned i = 0; i < n; ++i)
+                    w16 ((unsigned) (unsigned short) (short) std::lround (0.3 * 32767.0 * std::sin (2.0 * 3.14159265358979 * 330.0 * i / 44100.0)));
+                CHECK (wav.replaceWithData (bytes.data(), bytes.size()));
+            }
+            a.loadLoopFile (1, wav);
+            pump (a);
+            info = a.deckFileInfo (1);
+            std::printf ("load: state %d, name '%s', note '%s', %u frames\n", (int) info.state, info.name.toRawUTF8(), info.note.toRawUTF8(), (unsigned) a.engineStatus().deck[1].loopFrames.load());
+            CHECK (info.state == FS::linked && info.name == "plain.wav" && info.note.contains ("44.1 kHz"));
+            CHECK (std::abs ((int) a.engineStatus().deck[1].loopFrames.load() - 48000) <= 1);
+
+            // not a WAV: refused, the deck keeps what it had
+            const auto junk = dir.getChildFile ("junk.wav");
+            junk.replaceWithText ("this is not audio");
+            a.loadLoopFile (1, junk);
+            pump (a);
+            info = a.deckFileInfo (1);
+            std::printf ("junk: state %d, '%s'\n", (int) info.state, info.note.toRawUTF8());
+            CHECK (info.isError && info.state == FS::linked && info.name == "plain.wav");
+            CHECK (std::abs ((int) a.engineStatus().deck[1].loopFrames.load() - 48000) <= 1);
+        }
+
+        // Recording over a linked deck drops the link: it is "not saved" and is no longer written to the project.
+        setP (a, "record", 1.0f); block (a, 0.4f); setP (a, "record", 0.0f); block (a, 0.4f);
+        for (int i = 0; i < 20; ++i) { block (a, 0.4f); a.pollLoopFiles(); }
+        info = a.deckFileInfo (0);
+        CHECK (info.state == FS::unsaved);
+        {
+            juce::MemoryBlock again;
+            a.getStateInformation (again);
+            auto xml = juce::AudioProcessor::getXmlFromBinary (again.getData(), (int) again.getSize());
+            CHECK (xml != nullptr && xml->getChildByName ("LOOPFILES") != nullptr && xml->getChildByName ("LOOPFILES")->getNumChildElements() == 1);   // deck B's link only
+        }
+
+        a.setHomeFolder (oldHome);
+        dir.deleteRecursively();
     }
     std::printf(fails ? "EDITOR SMOKE TEST FAILED\n" : "EDITOR SMOKE TEST PASSED\n");
     return fails ? 1 : 0;

@@ -4,6 +4,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "engine/PitchMap.h"
+#include "engine/LoopFile.h"
 
 namespace
 {
@@ -11,6 +12,37 @@ namespace
 
     juce::String percentText (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; }
 }
+
+// One background thread for everything that reads or writes files or converts audio. The audio thread never
+// waits for it and it never touches the engine; results come back through postUi() and the 30 Hz timer.
+class UnofficialSpotykachProcessor::Worker : public juce::Thread
+{
+public:
+    Worker() : juce::Thread ("Unofficial Spotykach files") { startThread(); }
+    ~Worker() override { signalThreadShouldExit(); wake.signal(); stopThread (10000); }
+
+    void add (std::function<void()> job)
+    {
+        { const juce::ScopedLock sl (lock); jobs.push_back (std::move (job)); }
+        wake.signal();
+    }
+    void run() override
+    {
+        while (! threadShouldExit())
+        {
+            std::function<void()> job;
+            {
+                const juce::ScopedLock sl (lock);
+                if (! jobs.empty()) { job = std::move (jobs.front()); jobs.pop_front(); }
+            }
+            if (job) job(); else wake.wait (500);
+        }
+    }
+private:
+    juce::CriticalSection lock;
+    std::deque<std::function<void()>> jobs;
+    juce::WaitableEvent wake;
+};
 
 UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
     : AudioProcessor (BusesProperties()
@@ -39,6 +71,8 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
         p.feedback = apvts.getRawParameterValue (deckId (d, "feedback"));
         for (int i = 0; i < kNumDeckButtons; ++i)
             p.button[i] = apvts.getRawParameterValue (deckId (d, deckButtonBase (i)));
+        p.inTrim = apvts.getRawParameterValue (deckId (d, "inTrim"));
+        p.outTrim = apvts.getRawParameterValue (deckId (d, "outTrim"));
         p.cvPitch = apvts.getRawParameterValue (deckId (d, "cvPitch"));
         p.cvMix = apvts.getRawParameterValue (deckId (d, "cvMix"));
         p.cvPosition = apvts.getRawParameterValue (deckId (d, "cvPosition"));
@@ -70,6 +104,17 @@ UnofficialSpotykachProcessor::UnofficialSpotykachProcessor()
                 bind (d, e.cc, e.mod ? modId (d, e.base) : deckId (d, e.base));
         bind (2, 3, "crossfade");   // CC 3: crossfade, on any channel
     }
+    // Home folder for loop files: a per-computer setting (not stored in projects).
+    homePath = defaultHomeFolder().getFullPathName();
+    {
+        const auto f = settingsFile();
+        if (f.existsAsFile())
+        {
+            const auto saved = f.loadFileAsString().trim();
+            if (saved.isNotEmpty()) homePath = saved;
+        }
+    }
+    worker = std::make_unique<Worker>();
     startTimerHz (30);
     for (int m = 0; m < 2; ++m)
     {
@@ -102,6 +147,7 @@ const juce::StringArray& UnofficialSpotykachProcessor::modTargetNames()
 UnofficialSpotykachProcessor::~UnofficialSpotykachProcessor()
 {
     stopTimer();
+    worker.reset();          // finishes the job in progress; jobs still queued are dropped
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor::createLayout()
@@ -154,6 +200,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout UnofficialSpotykachProcessor
         knob ("envelope", "Envelope", 0.0f,  envText);
         knob ("mix",      "Mix",      0.5f,  percentText);
         knob ("feedback", "Feedback", 0.95f, percentText);
+
+        // Trims (plug-in addition; the hardware has analog trimmers).
+        layout.add (std::make_unique<juce::AudioParameterFloat> (id ("inTrim"), tag + "Input Trim",
+            NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f, Attrs().withLabel ("dB")));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (id ("outTrim"), tag + "Output Trim",
+            NormalisableRange<float> (-24.0f, 12.0f, 0.1f), 0.0f, Attrs().withLabel ("dB")));
 
         // CV-style inputs (the firmware's CV jacks), MIDI channel, transport follow, fit tempo.
         auto cv = [&] (const char* base, const char* name, float lo, float hi, std::function<juce::String (float, int)> text)
@@ -335,6 +387,8 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
             t.gritIntensity = dp.gritIntensity->load();
             t.gritMix       = dp.gritMix->load();
             t.gritCharacter = dp.gritCharacter->load();
+            t.inTrim     = juce::Decibels::decibelsToGain (dp.inTrim->load());
+            t.outTrim    = juce::Decibels::decibelsToGain (dp.outTrim->load());
             t.cvPitch    = dp.cvPitch->load();
             t.cvMix      = dp.cvMix->load();
             t.cvPosition = dp.cvPosition->load();
@@ -455,7 +509,11 @@ void UnofficialSpotykachProcessor::processBlock (juce::AudioBuffer<float>& buffe
     }
 }
 
-void UnofficialSpotykachProcessor::timerCallback() { applyPendingMidi(); }
+void UnofficialSpotykachProcessor::timerCallback()
+{
+    applyPendingMidi();
+    pollLoopFiles();
+}
 
 // Message thread, 30 Hz.
 void UnofficialSpotykachProcessor::applyPendingMidi()
@@ -489,15 +547,423 @@ juce::AudioProcessorEditor* UnofficialSpotykachProcessor::createEditor()
 
 void UnofficialSpotykachProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    if (auto xml = apvts.copyState().createXml())
+    auto state = apvts.copyState();
+    state.removeChild (state.getChildWithName ("LOOPFILES"), nullptr);
+    juce::ValueTree files_ ("LOOPFILES");
+    {
+        const juce::ScopedLock sl (fileLock);
+        for (int d = 0; d < 2; ++d)
+        {
+            const auto& l = files[d].link;
+            if (! l.valid()) continue;
+            juce::ValueTree n ("LOOP");
+            n.setProperty ("deck", d, nullptr);
+            n.setProperty ("path", juce::String (l.path), nullptr);
+            n.setProperty ("rel", juce::String (l.rel), nullptr);
+            n.setProperty ("size", (juce::int64) l.size, nullptr);
+            n.setProperty ("fp", juce::String::toHexString ((juce::int64) l.fingerprint), nullptr);
+            files_.addChild (n, -1, nullptr);
+        }
+    }
+    state.addChild (files_, -1, nullptr);
+    if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
 void UnofficialSpotykachProcessor::setStateInformation (const void* data, int size)
 {
-    if (auto xml = getXmlFromBinary (data, size))
-        if (xml->hasTagName (apvts.state.getType()))
-            apvts.replaceState (juce::ValueTree::fromXml (*xml));
+    auto xml = getXmlFromBinary (data, size);
+    if (xml == nullptr || ! xml->hasTagName (apvts.state.getType())) return;
+    apvts.replaceState (juce::ValueTree::fromXml (*xml));
+
+    // Loop links. A state without a LOOPFILES element (an older version) leaves the decks alone.
+    const auto lf = apvts.state.getChildWithName ("LOOPFILES");
+    if (! lf.isValid()) return;
+    bool restored[2] = { false, false };
+    for (int i = 0; i < lf.getNumChildren(); ++i)
+    {
+        const auto n = lf.getChild (i);
+        const int d = (int) n.getProperty ("deck", -1);
+        if (d < 0 || d > 1 || restored[d]) continue;
+        usp::LoopLink link;
+        link.path = n.getProperty ("path").toString().toStdString();
+        link.rel = n.getProperty ("rel").toString().toStdString();
+        link.size = (uint64_t) (juce::int64) n.getProperty ("size", 0);
+        link.fingerprint = (uint64_t) n.getProperty ("fp").toString().getHexValue64();
+        if (! link.valid()) continue;
+        restored[d] = true;
+        startRestore (d, link);
+    }
+    // A deck that holds audio but has no link in this state keeps the audio; it is simply not saved anywhere.
+    const juce::ScopedLock sl (fileLock);
+    for (int d = 0; d < 2; ++d)
+        if (! restored[d] && files[d].state != FileState::loading && files[d].state != FileState::empty)
+        {
+            files[d].state = FileState::unsaved;
+            files[d].link = {};
+            files[d].name = {};
+            files[d].note = "Loop is not saved to a file";
+            files[d].isError = false;
+        }
+}
+
+// ---- Loop files ---------------------------------------------------------------------------------------------
+juce::File UnofficialSpotykachProcessor::defaultHomeFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userMusicDirectory).getChildFile ("Unofficial Spotykach");
+}
+
+juce::File UnofficialSpotykachProcessor::settingsFile() const
+{
+    auto dir = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory);
+   #if JUCE_MAC
+    dir = dir.getChildFile ("Application Support");
+   #endif
+    return dir.getChildFile ("Unofficial Spotykach").getChildFile ("home-folder.txt");
+}
+
+juce::File UnofficialSpotykachProcessor::homeFolder() const
+{
+    const juce::ScopedLock sl (fileLock);
+    return juce::File (homePath);
+}
+
+void UnofficialSpotykachProcessor::setHomeFolder (const juce::File& folder)
+{
+    {
+        const juce::ScopedLock sl (fileLock);
+        homePath = folder.getFullPathName();
+    }
+    const auto f = settingsFile();
+    f.getParentDirectory().createDirectory();
+    f.replaceWithText (folder.getFullPathName());
+}
+
+void UnofficialSpotykachProcessor::postUi (std::function<void()> f)
+{
+    const juce::ScopedLock sl (uiLock);
+    uiQueue.push_back (std::move (f));
+}
+
+UnofficialSpotykachProcessor::FileInfo UnofficialSpotykachProcessor::deckFileInfo (int d) const
+{
+    const juce::ScopedLock sl (fileLock);
+    const auto& f = files[d];
+    FileInfo i;
+    i.state = f.state;
+    i.name = f.name;
+    i.note = f.note;
+    i.isError = f.isError;
+    if ((f.state == FileState::loading || f.state == FileState::saving) && juce::Time::getMillisecondCounter() - f.startedMs > 2500)
+        i.note += " (waiting for the host to run audio - press play in Logic)";
+    return i;
+}
+
+bool UnofficialSpotykachProcessor::loopFilesBusy() const
+{
+    const juce::ScopedLock sl (fileLock);
+    return files[0].state == FileState::loading || files[0].state == FileState::saving
+        || files[1].state == FileState::loading || files[1].state == FileState::saving;
+}
+
+// Starts an operation on a deck: remembers how the deck's file state was (to go back to it on failure).
+void UnofficialSpotykachProcessor::beginOp (int d, FileState state, const juce::String& note)
+{
+    auto& f = files[d];
+    f.backupState = f.state; f.backupLink = f.link; f.backupName = f.name; f.backupNote = f.note; f.backupSeq = f.linkedSeq;
+    f.state = state;
+    f.note = note;
+    f.isError = false;
+    f.queuedLoad.reset();
+    ++f.gen;
+    f.startedMs = juce::Time::getMillisecondCounter();
+}
+
+void UnofficialSpotykachProcessor::failOp (int d, uint32_t gen, const juce::String& message)
+{
+    const juce::ScopedLock sl (fileLock);
+    auto& f = files[d];
+    if (f.gen != gen) return;
+    f.state = f.backupState; f.link = f.backupLink; f.name = f.backupName; f.linkedSeq = f.backupSeq;
+    f.queuedLoad.reset();
+    f.note = message;
+    f.isError = true;
+}
+
+void UnofficialSpotykachProcessor::markMissing (int d, uint32_t gen, const usp::LoopLink& link, const juce::String& message)
+{
+    const juce::ScopedLock sl (fileLock);
+    auto& f = files[d];
+    if (f.gen != gen) return;
+    f.state = FileState::missing;
+    f.link = link;                      // kept: the project remembers it and will try again next time
+    f.name = juce::String (usp::fileNameOf (link.path));
+    f.note = message;
+    f.isError = true;
+    f.linkedSeq = engine.status().deck[d].contentSeq.load();
+    f.queuedLoad.reset();
+}
+
+void UnofficialSpotykachProcessor::loadLoopFile (int d, const juce::File& file)
+{
+    if (d < 0 || d > 1) return;
+    uint32_t gen;
+    std::string homeStd;
+    {
+        const juce::ScopedLock sl (fileLock);
+        beginOp (d, FileState::loading, "Reading " + file.getFileName());
+        files[d].pendName = file.getFileName();
+        gen = files[d].gen;
+        homeStd = homePath.toStdString();
+    }
+    const std::string path = file.getFullPathName().toStdString();
+    worker->add ([this, d, gen, path, homeStd]
+    {
+        std::vector<uint8_t> bytes;
+        if (! usp::readFileBytes (path, bytes))
+        {
+            postUi ([this, d, gen] { failOp (d, gen, "Could not read the file"); });
+            return;
+        }
+        const auto link = usp::makeLink (path, homeStd, bytes);
+        queueDecoded (d, gen, std::move (bytes), link, {}, false);
+    });
+}
+
+void UnofficialSpotykachProcessor::startRestore (int d, const usp::LoopLink& link)
+{
+    uint32_t gen;
+    std::string homeStd;
+    {
+        const juce::ScopedLock sl (fileLock);
+        beginOp (d, FileState::loading, "Looking for " + juce::String (usp::fileNameOf (link.path)));
+        files[d].link = link;                     // stays in the project while we look
+        files[d].name = juce::String (usp::fileNameOf (link.path));
+        gen = files[d].gen;
+        homeStd = homePath.toStdString();
+    }
+    worker->add ([this, d, gen, link, homeStd]
+    {
+        auto res = usp::resolveLink (link, homeStd);
+        if (res.state == usp::LinkState::missing)
+        {
+            postUi ([this, d, gen, link, homeStd]
+            {
+                markMissing (d, gen, link, "Missing: " + juce::String (usp::fileNameOf (link.path)) + " (looked in " + juce::String (homeStd) + ")");
+            });
+            return;
+        }
+        juce::String note;
+        if (res.state == usp::LinkState::moved) note = "Found again at a new place. ";
+        if (res.state == usp::LinkState::changed) note = "The file has changed since the project was saved; loaded as it is now. ";
+        const auto now = usp::makeLink (res.path, homeStd, res.bytes);
+        queueDecoded (d, gen, std::move (res.bytes), now, note, true);
+    });
+}
+
+// Worker thread: decodes the file and hands the audio to the message thread, which gives it to the engine.
+void UnofficialSpotykachProcessor::queueDecoded (int d, uint32_t gen, std::vector<uint8_t>&& bytes, const usp::LoopLink& link,
+                                                 const juce::String& prefixNote, bool isRestore)
+{
+    auto audio = std::make_shared<usp::LoopTransfer>();
+    usp::WavInfo info;
+    std::string message;
+    const auto err = usp::decodeWav (bytes.data(), bytes.size(), audio->audio, info, message);
+    bytes.clear();
+    bytes.shrink_to_fit();
+    const juce::String name (usp::fileNameOf (link.path));
+    if (err != usp::WavError::none)
+    {
+        const juce::String text = "Not loaded (" + name + "): " + juce::String (message);
+        postUi ([this, d, gen, link, text, isRestore]
+        {
+            if (isRestore) markMissing (d, gen, link, text);
+            else failOp (d, gen, text);
+        });
+        return;
+    }
+
+    juce::String note = prefixNote;
+    note << juce::String ((double) audio->audio.frames() / usp::kLoopRate, 1) << " s";
+    if (std::abs (info.rate - usp::kLoopRate) > 0.5)
+        note << ", converted from " << juce::String (info.rate / 1000.0, info.rate == std::floor (info.rate / 1000.0) * 1000.0 ? 0 : 1) << " kHz";
+    if (info.channels == 1) note << ", mono copied to both sides";
+    if (info.cut) note << ", cut to the first 42 s";
+    if (info.cueCount > 0) note << ", " << (int) info.cueCount << " slice points";
+
+    postUi ([this, d, gen, audio, link, name, note]
+    {
+        const juce::ScopedLock sl (fileLock);
+        auto& f = files[d];
+        if (f.gen != gen) return;
+        f.queuedLoad = audio;
+        f.pendLink = link;
+        f.pendName = name;
+        f.pendNote = note;
+        f.loadSubmitted = false;
+        f.note = "Loading " + name + " into the deck";
+    });
+}
+
+void UnofficialSpotykachProcessor::saveLoopFile (int d, const juce::File& file)
+{
+    if (d < 0 || d > 1) return;
+    const juce::ScopedLock sl (fileLock);
+    const auto& st = engine.status().deck[d];
+    auto& f = files[d];
+    if (st.empty.load() || st.loopFrames.load() == 0)
+    {
+        f.note = "Nothing to save: this deck has no loop";
+        f.isError = true;
+        return;
+    }
+    if (st.recording.load() || st.armed.load())
+    {
+        f.note = "Stop recording before saving";
+        f.isError = true;
+        return;
+    }
+    beginOp (d, FileState::saving, "Saving " + file.getFileName());
+    f.saveTarget = file.getFullPathName();
+
+    auto t = std::make_unique<usp::LoopTransfer>();
+    const uint32_t n = st.loopFrames.load();
+    t->audio.l.assign (n, 0.0f);
+    t->audio.r.assign (n, 0.0f);
+    t->cues.assign (usp::kMaxLoopCues, 0u);
+    if (! engine.submitSave (d, t))
+    {
+        f.state = f.backupState; f.link = f.backupLink; f.name = f.backupName; f.linkedSeq = f.backupSeq;
+        f.note = "Busy: try again in a moment";
+        f.isError = true;
+        return;
+    }
+    f.saveSubmitted = true;
+    f.saveGen = f.gen;
+}
+
+void UnofficialSpotykachProcessor::pollLoopFiles()
+{
+    // Results from the worker thread.
+    std::deque<std::function<void()>> todo;
+    {
+        const juce::ScopedLock sl (uiLock);
+        todo.swap (uiQueue);
+    }
+    for (auto& job : todo) job();
+
+    for (int d = 0; d < 2; ++d)
+    {
+        const juce::ScopedLock sl (fileLock);
+        auto& f = files[d];
+        const auto& st = engine.status().deck[d];
+
+        // Decoded audio waiting for the engine.
+        if (f.queuedLoad && ! f.loadSubmitted)
+        {
+            auto t = std::make_unique<usp::LoopTransfer>();
+            t->audio = std::move (f.queuedLoad->audio);
+            if (engine.submitLoad (d, t))
+            {
+                f.loadSubmitted = true;
+                f.loadGen = f.gen;
+                f.queuedLoad.reset();
+            }
+            else f.queuedLoad->audio = std::move (t->audio);      // the previous transfer is still with the engine: try again later
+        }
+
+        if (auto r = engine.collectLoad (d))
+        {
+            if (f.loadGen == f.gen)
+            {
+                if (r->result == usp::LoopTransfer::done)
+                {
+                    f.state = FileState::linked;
+                    f.link = f.pendLink;
+                    f.name = f.pendName;
+                    f.note = f.pendNote;
+                    f.isError = false;
+                    f.linkedSeq = r->contentSeq;
+                }
+                else
+                {
+                    f.state = f.backupState; f.link = f.backupLink; f.name = f.backupName; f.linkedSeq = f.backupSeq;
+                    f.note = r->result == usp::LoopTransfer::refused ? "Not loaded: stop recording on this deck first"
+                                                                       : "Not loaded: recording started while the file was loading";
+                    f.isError = true;
+                }
+            }
+        }
+
+        if (auto r = engine.collectSave (d))
+        {
+            if (f.saveGen == f.gen && f.state == FileState::saving)
+            {
+                if (r->result != usp::LoopTransfer::done)
+                {
+                    f.state = f.backupState; f.link = f.backupLink; f.name = f.backupName; f.linkedSeq = f.backupSeq;
+                    f.note = r->result == usp::LoopTransfer::refused ? "Not saved: the loop changed or the deck is recording"
+                                                                       : "Not saved: the loop changed while it was being copied";
+                    f.isError = true;
+                }
+                else
+                {
+                    std::shared_ptr<usp::LoopTransfer> shared (r.release());
+                    const uint32_t gen = f.gen, snapshotSeq = shared->contentSeq;
+                    const std::string target = f.saveTarget.toStdString(), homeStd = homePath.toStdString();
+                    worker->add ([this, d, gen, shared, snapshotSeq, target, homeStd]
+                    {
+                        usp::LoopAudio a = std::move (shared->audio);
+                        a.cues.assign (shared->cues.begin(), shared->cues.begin() + (long) shared->cueCount);
+                        std::vector<uint8_t> bytes;
+                        usp::encodeWav (a, bytes);
+                        const bool ok = usp::writeFileBytes (target, bytes);
+                        usp::LoopLink link;
+                        if (ok) link = usp::makeLink (target, homeStd, bytes);
+                        postUi ([this, d, gen, ok, link, snapshotSeq, target]
+                        {
+                            if (! ok) { failOp (d, gen, "Could not write " + juce::File (target).getFileName() + " (is the folder writable?)"); return; }
+                            const juce::ScopedLock sl2 (fileLock);
+                            auto& g = files[d];
+                            if (g.gen != gen) return;
+                            g.link = link;
+                            g.name = juce::String (usp::fileNameOf (link.path));
+                            g.isError = false;
+                            if (engine.status().deck[d].contentSeq.load() == snapshotSeq)
+                            {
+                                g.state = FileState::linked;
+                                g.linkedSeq = snapshotSeq;
+                                g.note = "Saved";
+                            }
+                            else
+                            {
+                                g.state = FileState::unsaved;
+                                g.link = {};
+                                g.note = "Saved " + g.name + ", but the loop changed meanwhile, so it is not linked";
+                            }
+                        });
+                    });
+                }
+            }
+            f.saveSubmitted = false;
+        }
+
+        // The deck's audio changed after it was loaded or saved (a recording, an overdub): the file no longer matches.
+        const uint32_t seq = st.contentSeq.load();
+        if ((f.state == FileState::linked || f.state == FileState::missing) && seq != f.linkedSeq)
+        {
+            f.state = FileState::unsaved;
+            f.link = {};
+            f.name = {};
+            f.note = "Loop is not saved to a file";
+            f.isError = false;
+        }
+        else if (f.state == FileState::empty && ! st.empty.load())
+        {
+            f.state = FileState::unsaved;
+            f.note = "Loop is not saved to a file";
+        }
+    }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

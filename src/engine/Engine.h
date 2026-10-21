@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include "LoopFile.h"
 
 namespace usp
 {
@@ -49,6 +50,10 @@ namespace usp
         float cvPosition = 0.0f;   // -1..+1, added to Position
         float cvSize     = 0.0f;   // -1..+1, added to Size
         int   fitBeats   = 4;      // 1..16, used by kActionFitTempo
+
+        // Plug-in additions (the hardware has analog trimmers here): linear gains, smoothed per sample in the core.
+        float inTrim  = 1.0f;      // before the deck (also what a recording from the input captures)
+        float outTrim = 1.0f;      // after the deck, before the panner and crossfade
     };
 
     // One of the two modulators. Upstream they only drive the Mod-out jack; here each one can be patched to
@@ -119,6 +124,8 @@ namespace usp
         std::atomic<bool>     seqArmed { false };      // trigger sequencer is armed (waiting for or recording Trigs)
         std::atomic<bool>     seqRecording { false };
         std::atomic<bool>     seqHasData { false };    // a trigger sequence is stored
+        std::atomic<uint32_t> loopFrames { 0 };        // frames in the loop at 48 kHz (0 = empty)
+        std::atomic<uint32_t> contentSeq { 0 };        // counts changes to the loop's audio: a recording or overdub starting, a file loaded
     };
 
     struct EngineStatus
@@ -131,6 +138,23 @@ namespace usp
         std::atomic<float>    fitBpm { 0.0f };         // tempo chosen by the last successful Fit tempo
         std::atomic<uint32_t> fitSeq { 0 };            // counts successful Fit tempo actions
         std::atomic<uint32_t> fitFailSeq { 0 };        // counts Fit tempo actions refused (no loop, or tempo outside 20..250 BPM)
+    };
+
+    // A loop crossing between a non-audio thread and the audio thread (decision D53). The caller allocates
+    // it, hands it over with submitLoad / submitSave and gets it back from collectLoad / collectSave once the
+    // audio thread has finished. The audio thread never allocates or frees; it only copies, a few thousand
+    // frames per 2 ms step.
+    //   Load: `audio` holds the loop (stereo, 48 kHz, at most kMaxLoopFrames). The deck must not be recording.
+    //   Save: the caller sizes audio.l and audio.r to the deck's current loopFrames; the audio thread fills them
+    //         and sets cueCount. Refused if the loop's length differs or it is being recorded.
+    struct LoopTransfer
+    {
+        enum Result : int { pending = 0, done = 1, refused = 2, changedWhileCopying = 3 };
+        LoopAudio audio;
+        std::vector<uint32_t> cues;      // Save: pre-sized to kMaxLoopCues; filled by the audio thread
+        size_t cueCount = 0;             // Save: slice points found
+        int result = pending;            // set by the audio thread before it hands the object back
+        uint32_t contentSeq = 0;         // the deck's contentSeq when the copy finished (or, for a refusal, now)
     };
 
     class Engine
@@ -153,6 +177,13 @@ namespace usp
                       const int* noteOn = nullptr);
 
         const EngineStatus& status() const { return statusValues; }
+
+        // Loop transfers (any non-audio thread; one transfer per deck and direction at a time).
+        // submit* moves the object only when it returns true (otherwise one is already waiting or running).
+        bool submitLoad (int deck, std::unique_ptr<LoopTransfer>& t);
+        bool submitSave (int deck, std::unique_ptr<LoopTransfer>& t);
+        std::unique_ptr<LoopTransfer> collectLoad (int deck);    // null until the audio thread has finished
+        std::unique_ptr<LoopTransfer> collectSave (int deck);
 
     private:
         EngineStatus statusValues;   // declared first: Impl keeps a reference to it

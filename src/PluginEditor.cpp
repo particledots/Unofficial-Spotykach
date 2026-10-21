@@ -59,7 +59,7 @@ public:
             "Includes code from Infrasonic Audio LLC and DaisySP (Electrosmith, MIT). "
             "Built with JUCE. This plug-in is licensed under the GNU AGPLv3; see "
             "LICENSE and THIRD-PARTY-LICENSES.txt that came with the download.\n\n"
-            "Milestone 7: both decks with Reel, Slice and Drift modes, Flux and Grit effects, two modulators that you can patch to a destination, a trigger sequencer per deck, MIDI notes and CCs (firmware map), CV-style automation inputs, fit tempo to loop, routing, A/B crossfade, tempo (internal, host or tap) and launch quantise. Saving loops with the project is not in yet.",
+            "Milestone 8: both decks with Reel, Slice and Drift modes, Flux and Grit effects, two modulators that you can patch to a destination, a trigger sequencer per deck, MIDI notes and CCs (firmware map), CV-style automation inputs, fit tempo to loop, routing, A/B crossfade, tempo (internal, host or tap) and launch quantise. New in 8: load a WAV into either deck, save a deck as a WAV, loops come back with the project through a link to their file (the project holds no audio), and input and output trims for each deck.",
             r.removeFromTop (r.getHeight() - 44), juce::Justification::topLeft, 20);
     }
 
@@ -319,7 +319,7 @@ void UnofficialSpotykachEditor::setupMod (int m)
 void UnofficialSpotykachEditor::showGlobalPage()
 {
     auto vis = [] (std::initializer_list<juce::Component*> l, bool v) { for (auto* c : l) c->setVisible (v); };
-    const bool setup = page == 0, mods = page == 1, cv = page == 2, midi = page == 3;
+    const bool setup = page == 0, mods = page == 1, cv = page == 2, midi = page == 3, files = page == 4;
     vis ({ &routeLabel, &routeBox, &panSpeed.slider, &panSpeed.label, &panRange.slider, &panRange.label, &tempo.slider, &tempo.label,
            &tempoSource.box, &tempoSource.label, &quantise.box, &quantise.label, &click.slider, &click.label, &outLevel.slider,
            &outLevel.label, &tapButton, &fitBeats[0].slider, &fitBeats[0].label, &fitBeats[1].slider, &fitBeats[1].label,
@@ -332,6 +332,11 @@ void UnofficialSpotykachEditor::showGlobalPage()
     for (int d = 0; d < 2; ++d)
         vis ({ &midiChannel[(size_t) d].box, &midiChannel[(size_t) d].label, &follow[(size_t) d] }, midi);
     vis ({ &midiMonitor, &midiHint }, midi);
+    for (int d = 0; d < 2; ++d)
+        vis ({ &loadButton[(size_t) d], &saveButton[(size_t) d], &fileTag[(size_t) d], &fileStatus[(size_t) d] }, files);
+    for (auto& t : trimSliders) vis ({ &t.slider, &t.label }, files);
+    vis ({ &folderButton, &folderLabel }, files);
+    filesTab.setToggleState (files, juce::dontSendNotification);
     setupTab.setToggleState (setup, juce::dontSendNotification);
     modsTab.setToggleState (mods, juce::dontSendNotification);
     cvTab.setToggleState (cv, juce::dontSendNotification);
@@ -389,7 +394,7 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     addAndMakeVisible (tapButton);
     tapButton.setTooltip ("Tap the tempo (sets Source to Internal)");
     tapButton.onClick = [this] { tap(); };
-    for (auto* b : { &setupTab, &modsTab, &cvTab, &midiTab })
+    for (auto* b : { &setupTab, &modsTab, &cvTab, &midiTab, &filesTab })
     {
         b->setColour (juce::TextButton::buttonOnColourId, kAccent);
         b->setColour (juce::TextButton::textColourOnId, kBg);
@@ -399,6 +404,40 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     modsTab.onClick  = [this] { page = 1; showGlobalPage(); resized(); };
     cvTab.onClick    = [this] { page = 2; showGlobalPage(); resized(); };
     midiTab.onClick  = [this] { page = 3; showGlobalPage(); resized(); };
+    filesTab.onClick = [this] { page = 4; showGlobalPage(); resized(); };
+
+    // FILES page: load / save a deck's loop as a WAV, the home folder, and the trims.
+    for (int d = 0; d < 2; ++d)
+    {
+        const auto i = (size_t) d;
+        loadButton[i].setButtonText ("LOAD...");
+        saveButton[i].setButtonText ("SAVE...");
+        loadButton[i].setTooltip ("Load a WAV file into this deck (any sample rate; mono or stereo; cut to 42 s; cue points become slice points)");
+        saveButton[i].setTooltip ("Save this deck's loop as a WAV file. Nothing is saved automatically.");
+        loadButton[i].onClick = [this, d] { chooseLoad (d); };
+        saveButton[i].onClick = [this, d] { chooseSave (d); };
+        fileTag[i].setText (d == 0 ? "A" : "B", juce::dontSendNotification);
+        fileTag[i].setColour (juce::Label::textColourId, kAccent);
+        fileStatus[i].setColour (juce::Label::textColourId, kDim);
+        fileStatus[i].setMinimumHorizontalScale (1.0f);
+        fileStatus[i].setJustificationType (juce::Justification::centredLeft);
+        for (auto* c : std::initializer_list<juce::Component*> { &loadButton[i], &saveButton[i], &fileTag[i], &fileStatus[i] })
+            addChildComponent (*c);
+
+        addLabelled (trimSliders[i * 2],     UnofficialSpotykachProcessor::deckId (d, "inTrim"),  d == 0 ? "In A" : "In B",   juce::Slider::LinearHorizontal);
+        addLabelled (trimSliders[i * 2 + 1], UnofficialSpotykachProcessor::deckId (d, "outTrim"), d == 0 ? "Out A" : "Out B", juce::Slider::LinearHorizontal);
+        for (size_t k = 0; k < 2; ++k)
+        {
+            trimSliders[i * 2 + k].slider.setTextValueSuffix (" dB");
+            trimSliders[i * 2 + k].slider.setDoubleClickReturnValue (true, 0.0);
+        }
+    }
+    folderButton.onClick = [this] { chooseFolder(); };
+    folderButton.setTooltip ("Where LOAD and SAVE start, and where a moved loop file is searched for");
+    folderLabel.setColour (juce::Label::textColourId, kDim);
+    folderLabel.setMinimumHorizontalScale (1.0f);
+    addChildComponent (folderButton);
+    addChildComponent (folderLabel);
 
     // CV page: the firmware's CV inputs as automatable parameters.
     {
@@ -636,20 +675,20 @@ void UnofficialSpotykachEditor::resized()
     };
     {
         auto rowX = r.removeFromTop (rowH);
-        auto tabs = rowX.removeFromRight (juce::roundToInt (236 * s));
-        const int tw = (tabs.getWidth() - 3 * juce::roundToInt (4 * s)) / 4;
-        for (auto* t : { &setupTab, &modsTab, &cvTab, &midiTab })
+        auto tabs = rowX.removeFromRight (juce::roundToInt (290 * s));
+        const int tw = (tabs.getWidth() - 4 * juce::roundToInt (4 * s)) / 5;
+        for (auto* t : { &setupTab, &modsTab, &cvTab, &midiTab, &filesTab })
         {
             t->setBounds (tabs.removeFromLeft (tw));
             tabs.removeFromLeft (juce::roundToInt (4 * s));
         }
         rowX.removeFromRight (juce::roundToInt (10 * s));
-        setLs (crossfade, rowX, 100, 110);
+        setLs (crossfade, rowX, 92, 100);
     }
     r.removeFromTop (juce::roundToInt (6 * s));
 
     // The page area below the crossfade row holds either the setup rows or the two modulators.
-    auto pageArea = r.removeFromTop (juce::roundToInt (148 * s));
+    auto pageArea = r.removeFromTop (juce::roundToInt (164 * s));
     {
         auto p = pageArea;
         auto rowR = p.removeFromTop (rowH);
@@ -712,6 +751,37 @@ void UnofficialSpotykachEditor::resized()
             }
         setLs (cvCrossfade, p.removeFromTop (rowH), 100, 76);
     }
+    {   // FILES page
+        auto p = pageArea;
+        for (int d = 0; d < 2; ++d)
+        {
+            const auto i = (size_t) d;
+            auto row = p.removeFromTop (juce::roundToInt (34 * s));
+            fileTag[i].setFont (font (13.0f, true));
+            fileTag[i].setBounds (row.removeFromLeft (juce::roundToInt (22 * s)));
+            loadButton[i].setBounds (row.removeFromLeft (juce::roundToInt (70 * s)).reduced (0, juce::roundToInt (3 * s)));
+            row.removeFromLeft (juce::roundToInt (6 * s));
+            saveButton[i].setBounds (row.removeFromLeft (juce::roundToInt (70 * s)).reduced (0, juce::roundToInt (3 * s)));
+            row.removeFromLeft (juce::roundToInt (10 * s));
+            fileStatus[i].setFont (font (11.0f));
+            fileStatus[i].setBounds (row);
+            p.removeFromTop (juce::roundToInt (4 * s));
+        }
+        for (int k = 0; k < 2; ++k)       // k = 0: inputs, k = 1: outputs
+        {
+            auto row = p.removeFromTop (rowH);
+            auto left = row.removeFromLeft (row.getWidth() / 2 - juce::roundToInt (5 * s));
+            row.removeFromLeft (juce::roundToInt (10 * s));
+            setLs (trimSliders[(size_t) k], left, 44, 72);
+            setLs (trimSliders[(size_t) (2 + k)], row, 44, 72);
+            p.removeFromTop (juce::roundToInt (4 * s));
+        }
+        auto row = p.removeFromTop (rowH);
+        folderButton.setBounds (row.removeFromLeft (juce::roundToInt (86 * s)).reduced (0, juce::roundToInt (1 * s)));
+        row.removeFromLeft (juce::roundToInt (8 * s));
+        folderLabel.setFont (font (11.0f));
+        folderLabel.setBounds (row);
+    }
     {   // MIDI page
         auto p = pageArea;
         for (int d = 0; d < 2; ++d)
@@ -764,10 +834,83 @@ void UnofficialSpotykachEditor::resized()
         proc.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);   // remembered with the session
 }
 
+// ---- FILES page ----------------------------------------------------------------------------------------------
+void UnofficialSpotykachEditor::chooseLoad (int d)
+{
+    auto start = proc.homeFolder();
+    if (! start.isDirectory()) start = juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+    chooser = std::make_unique<juce::FileChooser> (juce::String ("Load a WAV file into Deck ") + (d == 0 ? "A" : "B"), start, "*.wav");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this, d] (const juce::FileChooser& fc)
+                          {
+                              const auto f = fc.getResult();
+                              if (f != juce::File()) proc.loadLoopFile (d, f);
+                          });
+}
+
+void UnofficialSpotykachEditor::chooseSave (int d)
+{
+    auto start = proc.homeFolder();
+    if (! start.isDirectory()) start = juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+    chooser = std::make_unique<juce::FileChooser> (juce::String ("Save Deck ") + (d == 0 ? "A" : "B") + " as a WAV file",
+                                                   start.getChildFile (d == 0 ? "Deck A loop.wav" : "Deck B loop.wav"), "*.wav");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                            | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this, d] (const juce::FileChooser& fc)
+                          {
+                              auto f = fc.getResult();
+                              if (f == juce::File()) return;
+                              if (! f.hasFileExtension ("wav")) f = f.withFileExtension ("wav");
+                              proc.saveLoopFile (d, f);
+                          });
+}
+
+void UnofficialSpotykachEditor::chooseFolder()
+{
+    auto start = proc.homeFolder();
+    if (! start.isDirectory()) start = juce::File::getSpecialLocation (juce::File::userMusicDirectory);
+    chooser = std::make_unique<juce::FileChooser> ("Choose the home folder for loop files", start);
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories,
+                          [this] (const juce::FileChooser& fc)
+                          {
+                              const auto f = fc.getResult();
+                              if (f != juce::File()) proc.setHomeFolder (f);
+                          });
+}
+
+void UnofficialSpotykachEditor::updateFilePage()
+{
+    using FS = UnofficialSpotykachProcessor::FileState;
+    const auto& st = proc.engineStatus();
+    for (size_t d = 0; d < 2; ++d)
+    {
+        const auto i = proc.deckFileInfo ((int) d);
+        juce::String text;
+        switch (i.state)
+        {
+            case FS::empty:   text = "Empty. LOAD a WAV file, or record a loop."; break;
+            case FS::unsaved: text = "Not saved to a file. SAVE it to keep it with the project."; break;
+            case FS::linked:  text = i.name + (i.note.isNotEmpty() ? "   -   " + i.note : juce::String()); break;
+            default:          text = i.note; break;
+        }
+        if (i.isError && i.state != FS::missing)
+            text = i.note + (i.name.isNotEmpty() ? "   (still: " + i.name + ")" : juce::String());
+        fileStatus[d].setText (text, juce::dontSendNotification);
+        fileStatus[d].setColour (juce::Label::textColourId, i.isError ? juce::Colour (0xffe0674f) : kDim);
+
+        const auto& s = st.deck[d];
+        const bool busy = s.recording.load() || s.armed.load();
+        loadButton[d].setEnabled (! busy);
+        saveButton[d].setEnabled (! busy && ! s.empty.load());
+    }
+    folderLabel.setText (proc.homeFolder().getFullPathName(), juce::dontSendNotification);
+}
+
 void UnofficialSpotykachEditor::timerCallback()
 {
     const float peak = proc.inputPeak.exchange (0.0f);
     meterLevel = juce::jmax (peak, meterLevel * 0.85f);
+    updateFilePage();
 
     const auto& st = proc.engineStatus();
     for (size_t d = 0; d < 2; ++d)

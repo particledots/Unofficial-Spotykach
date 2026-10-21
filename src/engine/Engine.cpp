@@ -16,6 +16,7 @@
 #include "track.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -108,6 +109,11 @@ namespace usp
 
         ~Impl()
         {
+            // Loop transfers that were never collected (the audio thread has stopped by now).
+            for (int d = 0; d < 2; ++d)
+                for (auto* a : { &loadIn[d], &loadDone[d], &saveIn[d], &saveDone[d] })
+                    delete a->exchange (nullptr);
+            delete loadWork[0]; delete loadWork[1]; delete saveWork[0]; delete saveWork[1];
             if (core != nullptr) core->~Core();
             std::free (coreMemory);
         }
@@ -255,6 +261,11 @@ namespace usp
 
                 auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
                 auto& g = deck.voxs();
+
+                // Trims (plug-in addition). The core smooths them per sample.
+                auto gain = [] (const float v) { return std::isfinite (v) ? std::min (8.0f, std::max (0.0f, v)) : 1.0f; };
+                core->set_trim_in (d == 0 ? Deck::A : Deck::B, gain (t.inTrim));
+                core->set_trim_out (d == 0 ? Deck::A : Deck::B, gain (t.outTrim));
 
                 // Mode switch, as in CoreUI::_process_switches(): set the mode, re-infer the panner,
                 // then re-apply size (and here also pitch/position/envelope) once the mode is in effect.
@@ -521,10 +532,139 @@ namespace usp
         void beginChunk()
         {
             usp::gEngineMs = (uint32_t) (engineSamples / 48);
+            serviceTransfers();
             applyModulators();
             applyParams();
             core->driver().tick (hostClockStep());
             core->prepare();
+        }
+
+        // ---- Loop files (decision D53) ------------------------------------------------------------------
+        // A loop is copied between the deck's buffer and a caller-owned LoopTransfer, kCopyStep frames per 2 ms
+        // step, so no single audio block carries a 16 MB copy. The objects are allocated and freed by the
+        // caller; here they are only handed over through atomics.
+        static constexpr size_t kCopyStep = 16384;
+
+        void finishTransfer (LoopTransfer* t, const int result, const uint32_t seq, std::atomic<LoopTransfer*>& doneSlot)
+        {
+            t->result = result;
+            t->contentSeq = seq;
+            doneSlot.store (t, std::memory_order_release);
+        }
+
+        void serviceTransfers()
+        {
+            using namespace spotykach;
+            for (int d = 0; d < 2; ++d)
+            {
+                auto& deck = core->deck (d == 0 ? Deck::A : Deck::B);
+                auto& s = status.deck[d];
+                const bool active = deck.is_armed() || deck.is_recording();
+                // A recording (or arming, which clears the buffer) changes the loop's audio: anything saved earlier no longer matches.
+                if (active && ! wasActive[d]) s.contentSeq.fetch_add (1, std::memory_order_relaxed);
+                wasActive[d] = active;
+
+                // Save: loop -> caller's buffers.
+                if (saveWork[d] == nullptr)
+                {
+                    if (auto* t = saveIn[d].exchange (nullptr, std::memory_order_acquire))
+                    {
+                        const size_t n = deck.buffer().rec_size();
+                        if (active || n == 0 || t->audio.l.size() != n || t->audio.r.size() != n || t->cues.size() < kMaxLoopCues)
+                            finishTransfer (t, LoopTransfer::refused, s.contentSeq.load (std::memory_order_relaxed), saveDone[d]);
+                        else
+                        {
+                            saveWork[d] = t;
+                            savePos[d] = 0;
+                            saveSeq[d] = s.contentSeq.load (std::memory_order_relaxed);
+                        }
+                    }
+                }
+                if (auto* t = saveWork[d])
+                {
+                    const size_t n = t->audio.l.size();
+                    if (active || deck.buffer().rec_size() != n || s.contentSeq.load (std::memory_order_relaxed) != saveSeq[d])
+                    {
+                        saveWork[d] = nullptr;
+                        finishTransfer (t, LoopTransfer::changedWhileCopying, s.contentSeq.load (std::memory_order_relaxed), saveDone[d]);
+                    }
+                    else
+                    {
+                        const size_t take = std::min (kCopyStep, n - savePos[d]);
+                        const Buffer::Frame* src = deck.buffer().raw() + savePos[d];
+                        float* l = t->audio.l.data() + savePos[d];
+                        float* r = t->audio.r.data() + savePos[d];
+                        for (size_t i = 0; i < take; ++i) { l[i] = src[i].l; r[i] = src[i].r; }
+                        savePos[d] += take;
+                        if (savePos[d] >= n)
+                        {
+                            const size_t found = *deck.voxs().cue_count();
+                            const size_t* pts = deck.voxs().cue_points();
+                            size_t k = 0;
+                            for (size_t i = 0; i < found && k < kMaxLoopCues; ++i)
+                                if (pts[i] < n) t->cues[k++] = (uint32_t) pts[i];
+                            t->cueCount = k;
+                            saveWork[d] = nullptr;
+                            finishTransfer (t, LoopTransfer::done, saveSeq[d], saveDone[d]);
+                        }
+                    }
+                }
+
+                // Load: caller's audio -> the deck's buffer.
+                if (loadWork[d] == nullptr)
+                {
+                    if (auto* t = loadIn[d].exchange (nullptr, std::memory_order_acquire))
+                    {
+                        const size_t n = t->audio.frames();
+                        if (active || n == 0 || n > kMaxLoopFrames || t->audio.r.size() != n)
+                            finishTransfer (t, LoopTransfer::refused, s.contentSeq.load (std::memory_order_relaxed), loadDone[d]);
+                        else
+                        {
+                            deck.stop();
+                            deck.buffer().set_rec_size (0);      // empty (silent) while the new audio is copied in
+                            loadWork[d] = t;
+                            loadPos[d] = 0;
+                        }
+                    }
+                }
+                if (auto* t = loadWork[d])
+                {
+                    const size_t n = t->audio.frames();
+                    if (active)
+                    {
+                        // Recording was started during the copy; the deck stays empty and the load is abandoned.
+                        loadWork[d] = nullptr;
+                        finishTransfer (t, LoopTransfer::changedWhileCopying, s.contentSeq.load (std::memory_order_relaxed), loadDone[d]);
+                    }
+                    else
+                    {
+                        const size_t take = std::min (kCopyStep, n - loadPos[d]);
+                        Buffer::Frame* dst = deck.buffer().raw() + loadPos[d];
+                        const float* l = t->audio.l.data() + loadPos[d];
+                        const float* r = t->audio.r.data() + loadPos[d];
+                        for (size_t i = 0; i < take; ++i) { dst[i].l = l[i]; dst[i].r = r[i]; }
+                        loadPos[d] += take;
+                        if (loadPos[d] >= n)
+                        {
+                            // As the firmware's DeckStorage does when a file has loaded: slice points from the file's cue
+                            // chunk, then the loop length, then (Slice mode) the grid.
+                            auto& g = deck.voxs();
+                            g.clear_cue();
+                            size_t* pts = g.cue_points();
+                            uint8_t* count = g.cue_count();
+                            size_t k = 0;
+                            for (size_t i = 0; i < t->audio.cues.size() && k < kMaxLoopCues; ++i)
+                                if (t->audio.cues[i] < n) pts[k++] = t->audio.cues[i];
+                            *count = (uint8_t) k;
+                            deck.buffer().set_rec_size (n);
+                            if (deck.mode() == Mode::Slice) deck.make_grid();
+                            const uint32_t seq = s.contentSeq.fetch_add (1, std::memory_order_relaxed) + 1;
+                            loadWork[d] = nullptr;
+                            finishTransfer (t, LoopTransfer::done, seq, loadDone[d]);
+                        }
+                    }
+                }
+            }
         }
 
         void publish()
@@ -541,6 +681,7 @@ namespace usp
                 s.reverse.store (deck.is_reverse(), std::memory_order_relaxed);
                 s.empty.store (deck.is_empty(), std::memory_order_relaxed);
                 s.loopSeconds.store ((float) deck.buffer().rec_size() / (float) kEngineRate, std::memory_order_relaxed);
+                s.loopFrames.store ((uint32_t) deck.buffer().rec_size(), std::memory_order_relaxed);
                 s.playhead.store (deck.norm_playhead_at (0), std::memory_order_relaxed);
                 s.seqArmed.store (deck.track().is_armed(), std::memory_order_relaxed);
                 s.seqRecording.store (deck.track().is_recording(), std::memory_order_relaxed);
@@ -663,6 +804,15 @@ namespace usp
         int chunkPos = 0;
         uint64_t engineSamples = 0;
 
+        // Loop transfers. *In: handed to the audio thread; *Done: handed back; *Busy: one transfer per deck and direction.
+        std::atomic<LoopTransfer*> loadIn[2] = {}, loadDone[2] = {}, saveIn[2] = {}, saveDone[2] = {};
+        std::atomic<int> loadBusy[2] = {}, saveBusy[2] = {};
+        LoopTransfer* loadWork[2] = {};      // audio thread only
+        LoopTransfer* saveWork[2] = {};
+        size_t loadPos[2] = {}, savePos[2] = {};
+        uint32_t saveSeq[2] = {};
+        bool wasActive[2] = {};
+
         double hostRateValue = 48000.0;
         int outPrime = 0;
         int slice = 256, engineCap = 320;
@@ -675,6 +825,37 @@ namespace usp
         impl->prepare (48000.0, 512);
     }
     Engine::~Engine() = default;
+
+    bool Engine::submitLoad (int d, std::unique_ptr<LoopTransfer>& t)
+    {
+        if (d < 0 || d > 1 || ! t) return false;
+        int idle = 0;
+        if (! impl->loadBusy[d].compare_exchange_strong (idle, 1)) return false;
+        impl->loadIn[d].store (t.release(), std::memory_order_release);
+        return true;
+    }
+    bool Engine::submitSave (int d, std::unique_ptr<LoopTransfer>& t)
+    {
+        if (d < 0 || d > 1 || ! t) return false;
+        int idle = 0;
+        if (! impl->saveBusy[d].compare_exchange_strong (idle, 1)) return false;
+        impl->saveIn[d].store (t.release(), std::memory_order_release);
+        return true;
+    }
+    std::unique_ptr<LoopTransfer> Engine::collectLoad (int d)
+    {
+        if (d < 0 || d > 1) return nullptr;
+        std::unique_ptr<LoopTransfer> t (impl->loadDone[d].exchange (nullptr, std::memory_order_acquire));
+        if (t) impl->loadBusy[d].store (0);
+        return t;
+    }
+    std::unique_ptr<LoopTransfer> Engine::collectSave (int d)
+    {
+        if (d < 0 || d > 1) return nullptr;
+        std::unique_ptr<LoopTransfer> t (impl->saveDone[d].exchange (nullptr, std::memory_order_acquire));
+        if (t) impl->saveBusy[d].store (0);
+        return t;
+    }
 
     void Engine::prepare (double hostSampleRate, int maxHostBlock) { impl->prepare (hostSampleRate, maxHostBlock); }
     int  Engine::latencySamples() const { return impl->latency(); }

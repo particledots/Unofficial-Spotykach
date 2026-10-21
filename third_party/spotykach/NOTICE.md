@@ -21,3 +21,5 @@ re-implementation of its interface in `src/engine/shim/synclock.h`).
 - `src/core/core.cpp`, `src/core/core.h`: `Core::init` takes caller-supplied buffers instead of the
   Daisy SDRAM singleton (adds `Core::Buffers`).
 - `src/core/generator.cpp`: guarded a modulus by zero in `apply_dimensions()` (Slice mode on an empty deck). ARM tolerates it, x86 raises SIGFPE.
+- `src/core/core.cpp`, `src/core/core.h` (second change): per-deck input and output trims (`set_trim_in`, `set_trim_out`,
+  applied in `Core::process`). The hardware has analog trimmers here; the firmware has no equivalent.

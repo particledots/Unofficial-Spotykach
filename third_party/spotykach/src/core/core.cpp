@@ -102,6 +102,15 @@ void Core::process(const float* const* in, float** out, size_t size)
             in_b[0] = in_b[1] = in[1][i];
         }
 
+        // MODIFIED for Unofficial Spotykach (2026): input trims (one-pole, about 10 ms at 48 kHz).
+        constexpr float kTrimSmooth = 0.0021f;
+        for (int t = 0; t < Deck::Count; t++) {
+            _trim_in_now[t] += kTrimSmooth * (_trim_in[t] - _trim_in_now[t]);
+            _trim_out_now[t] += kTrimSmooth * (_trim_out[t] - _trim_out_now[t]);
+        }
+        in_a[0] *= _trim_in_now[Deck::A]; in_a[1] *= _trim_in_now[Deck::A];
+        in_b[0] *= _trim_in_now[Deck::B]; in_b[1] *= _trim_in_now[Deck::B];
+
         deck_a.process_out(in_a[0], in_a[1], out_a[0], out_a[1]);
         deck_b.process_out(in_b[0], in_b[1], out_b[0], out_b[1]);
 
@@ -119,6 +128,11 @@ void Core::process(const float* const* in, float** out, size_t size)
 
         _mod[Deck::A].follow(out_a[0]);
         _mod[Deck::B].follow(out_b[0]);
+
+        // MODIFIED for Unofficial Spotykach (2026): output trims, after the modulator follower and the
+        // deck-to-deck recording feed, before the panner and crossfade.
+        out_a[0] *= _trim_out_now[Deck::A]; out_a[1] *= _trim_out_now[Deck::A];
+        out_b[0] *= _trim_out_now[Deck::B]; out_b[1] *= _trim_out_now[Deck::B];
 
         float* d_out[2] = { out_a, out_b };
         _panner.process(d_out, d_out);

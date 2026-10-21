@@ -7,7 +7,7 @@ if(APPLE)
 endif()
 
 # The version shown on the About screen comes from here.
-project(UnofficialSpotykach VERSION 0.6.0)
+project(UnofficialSpotykach VERSION 0.7.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,7 +40,7 @@ target_compile_options(DaisySP PRIVATE -w -fwrapv)
 file(GLOB SPK_CORE_SRC CONFIGURE_DEPENDS
   third_party/spotykach/src/core/*.cpp
   third_party/spotykach/src/core/fx/*.cpp)
-add_library(spotykach_core STATIC ${SPK_CORE_SRC} src/engine/Engine.cpp)
+add_library(spotykach_core STATIC ${SPK_CORE_SRC} src/engine/Engine.cpp src/engine/LoopFile.cpp src/engine/LoopLibrary.cpp)
 target_include_directories(spotykach_core PUBLIC
   src/engine
   src/engine/shim
@@ -57,6 +57,11 @@ set_target_properties(spotykach_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_executable(engine_test EXCLUDE_FROM_ALL tests/engine_test.cpp)
 target_compile_definitions(engine_test PRIVATE COUNT_ALLOCS)
 target_link_libraries(engine_test PRIVATE spotykach_core)
+
+# Headless test of loop files, links, the loop hand-over and the trims.
+add_executable(loop_test EXCLUDE_FROM_ALL tests/loop_test.cpp)
+target_compile_definitions(loop_test PRIVATE COUNT_ALLOCS)
+target_link_libraries(loop_test PRIVATE spotykach_core)
 
 if(US_ENGINE_ONLY)
   return()
