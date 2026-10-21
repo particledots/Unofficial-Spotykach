@@ -17,6 +17,7 @@
 #include <new>
 #include <random>
 #include <vector>
+#include <unistd.h>    // mkdtemp is declared here on macOS
 
 #ifdef COUNT_ALLOCS
 static std::atomic<long> gAllocs { 0 };

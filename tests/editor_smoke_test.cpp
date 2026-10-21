@@ -5,6 +5,7 @@
 #include "../src/PluginEditor.h"
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>    // mkdtemp is declared here on macOS
 
 static int fails = 0;
 #define CHECK(c) do { if (!(c)) { std::printf("FAIL: %s (line %d)\n", #c, __LINE__); ++fails; } } while (0)
