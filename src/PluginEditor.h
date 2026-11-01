@@ -15,11 +15,13 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    static constexpr int kBaseWidth = 1044, kBaseHeight = 622;
+    // Design size (M10 panel). The window keeps this aspect ratio and is resizable from 75 % to 125 %.
+    static constexpr int kBaseWidth = 1280, kBaseHeight = 960;
 
 private:
     class AboutPanel;
     class PanelLook;
+    class PagePanel;
     using SliderAtt = juce::AudioProcessorValueTreeState::SliderAttachment;
 
     struct Knob
@@ -43,22 +45,21 @@ private:
     struct DeckUI
     {
         juce::Label title, status;
-        juce::Colour accent;                 // amber for Deck A, violet for Deck B (as in the mockup)
+        juce::Colour accent;                 // amber for Deck A, violet for Deck B
         std::array<juce::TextButton, 3> modeChip;      // Reel / Slice / Drift (the Mode combo box below stays hidden and is the attachment)
         std::array<juce::TextButton, UnofficialSpotykachProcessor::kNumDeckButtons> buttons;
         std::array<Knob, 6> knobs;      // position, size, pitch, envelope, mix, feedback
         LabelledCombo mode, snap;
-        LabelledSlider offset, envLength, window;
+        Knob offset, envLength, window;
         int lastSnap = -1, lastFluxMode = -1, lastGritMode = -1;
         std::array<Knob, 6> fxKnobs;     // flux time, feedback, mix; grit intensity, mix, character
-        juce::TextButton pageButton { "FX" };
-        juce::ToggleButton fluxOn { "Flux" }, gritOn { "Grit" };
+        juce::ToggleButton fluxOn { "flux" }, gritOn { "grit" };
         std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> fluxOnAtt, gritOnAtt;
         LabelledCombo fluxMode, gritMode;
-        bool fxPage = false;
         double clearDownAt = 0.0;        // when CLEAR was pressed (hold 1.5 s, as on the hardware); 0 = not held
         bool clearFired = false;
-        juce::Rectangle<float> panel, ring;
+        juce::Rectangle<float> ring;
+        juce::Path bandBright, bandDim;  // the concentric broken rings around the pitch knob (built in layoutDeck)
     };
     struct ModUI
     {
@@ -74,14 +75,14 @@ private:
 
     void timerCallback() override;
     void setupDeck (int deck);
+    void setupKnob (Knob&, const juce::String& paramId, const juce::String& text, juce::Colour accent);
     void addLabelled (LabelledSlider&, const juce::String& paramId, const juce::String& text, juce::Slider::SliderStyle);
     void addCombo (LabelledCombo&, const juce::String& paramId, const juce::String& text);
     void pulse (const juce::String& paramId);
-    void showPage (int deck);
     void setupMod (int mod);
     void showGlobalPage();
     void tap();
-    void layoutDeck (int deck, juce::Rectangle<int> area, float s);
+    void layoutDeck (int deck, float s);
     void drawRing (juce::Graphics&, int deck);
     juce::Font font (float size, bool bold = false) const;
 
@@ -91,15 +92,18 @@ private:
     float scale = 1.0f;
     bool sizeRemembering = false;   // only store the size once construction is finished
 
-    juce::Label titleLabel, unofficialLabel, taglineLabel, versionLabel;
-    juce::Rectangle<float> centrePanel, bottomPanel;
+    juce::Label titleLabel, hintLabel, versionLabel, footerLabel;
+    juce::Rectangle<int> pageRect;     // where the lower page opens (below the pads), in window pixels
     juce::Rectangle<int> footerArea;
     juce::Label inputLabel;
     std::array<DeckUI, 2> deckUI;
     LabelledSlider crossfade, panSpeed, panRange, outLevel, tempo, click;
+    std::array<juce::Label, 2> abLabel;           // the crossfade ends: [0] = B (top), [1] = A (bottom)
     std::array<ModUI, 2> modUI;
-    juce::TextButton setupTab { "SETUP" }, modsTab { "MODS" }, cvTab { "CV" }, midiTab { "MIDI" }, filesTab { "FILES" }, tapButton { "TAP" };
-    int page = 0;                      // 0 setup, 1 mods, 2 cv, 3 midi, 4 files
+    juce::TextButton setupTab { "setup" }, modsTab { "mods" }, cvTab { "cv" }, midiTab { "midi" }, filesTab { "files" }, tapButton { "tap" };
+    int page = -1;                     // -1 closed, 0 setup, 1 mods, 2 cv, 3 midi, 4 files
+    std::unique_ptr<PagePanel> pagePanel;
+    std::vector<juce::Component*> pageWidgets;   // everything that lives on a page (raised above the panel when it opens)
 
     // FILES page: loop files per deck, the home folder and the four trims.
     std::array<juce::TextButton, 2> loadButton, saveButton;
@@ -126,9 +130,10 @@ private:
     std::vector<double> tapTimes;     // message thread only
     LabelledCombo tempoSource, quantise;
     juce::Label routeLabel;
-    juce::ComboBox routeBox;
+    juce::ComboBox routeBox;           // hidden: it is the parameter attachment; the three dots below drive it
+    std::array<juce::ToggleButton, 3> routeBtn;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> routeAttachment;
-    juce::TextButton aboutButton { "About" };
+    juce::TextButton aboutButton { "about" };
     std::unique_ptr<AboutPanel> about;
 
     float meterLevel = 0.0f;

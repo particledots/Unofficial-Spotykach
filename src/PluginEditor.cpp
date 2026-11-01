@@ -12,23 +12,29 @@ namespace
         return juce::String ("v") + JucePlugin_VersionString + " (build " + US_BUILD_ID + ")";
     }
 
-    // The mockup's palette (docs/SPEC.md section 6).
-    const juce::Colour kBg     { 0xff17181a };
-    const juce::Colour kPanel  { 0xff212225 };
-    const juce::Colour kPanel2 { 0xff1b1c1e };
-    const juce::Colour kBorder { 0xff323438 };
-    const juce::Colour kEdge   { 0xff5a5c60 };
-    const juce::Colour kTrack  { 0xff35373b };
-    const juce::Colour kText   { 0xffece8df };
-    const juce::Colour kDim    { 0xffb4b1a8 };
+    // Palette of the M10 panel (the Audrey-style look: near-black, cream knobs, one accent per deck).
+    const juce::Colour kBg     { 0xff0b0b0c };
+    const juce::Colour kPanel  { 0xff141416 };
+    const juce::Colour kPanel2 { 0xff1b1b1d };
+    const juce::Colour kBorder { 0xff2e2d2a };
+    const juce::Colour kEdge   { 0xff5b574d };
+    const juce::Colour kTrack  { 0xff3b3a36 };
+    const juce::Colour kText   { 0xfff1e9d6 };
+    const juce::Colour kLabel  { 0xffd9d2c0 };
+    const juce::Colour kDim    { 0xffa39d8f };
+    const juce::Colour kCap    { 0xfff3ecda };
     const juce::Colour kAccent { 0xffe8a33d };     // Deck A, and general highlights
     const juce::Colour kViolet { 0xffb48ae0 };     // Deck B
     const juce::Colour kRec    { 0xffd9423a };
     const juce::Colour kGreen  { 0xff4caf6a };
+
+    // Window positions are given in the 1280 x 960 design size and scaled.
+    constexpr float kDeckW = 540.0f, kDeckAX = 20.0f, kDeckBX = 720.0f;
+    constexpr float kRingCX = 255.0f, kRingCY = 370.0f, kRingR = 150.0f;
 }
 
 //==============================================================================
-// Flat look after the mockup: arc knobs, outlined buttons, thin sliders.
+// Look of the M10 panel: cream knobs on near-black, outlined pill buttons, text tabs.
 class UnofficialSpotykachEditor::PanelLook : public juce::LookAndFeel_V4
 {
 public:
@@ -47,8 +53,8 @@ public:
         setColour (juce::PopupMenu::highlightedBackgroundColourId, kEdge);
         setColour (juce::PopupMenu::highlightedTextColourId, kText);
         setColour (juce::Slider::textBoxTextColourId, kText);
-        setColour (juce::Slider::textBoxBackgroundColourId, kPanel2);
-        setColour (juce::Slider::textBoxOutlineColourId, kBorder);
+        setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
+        setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         setColour (juce::Slider::textBoxHighlightColourId, kEdge);
         setColour (juce::Label::textColourId, kText);
         setColour (juce::ToggleButton::textColourId, kText);
@@ -58,14 +64,45 @@ public:
         setColour (juce::TooltipWindow::outlineColourId, kEdge);
     }
 
+    // The value text under a knob scales with the knob's text box.
+    juce::Font getLabelFont (juce::Label& l) override
+    {
+        if (dynamic_cast<juce::Slider*> (l.getParentComponent()) != nullptr)
+            return juce::Font (juce::FontOptions (juce::jlimit (10.0f, 24.0f, (float) l.getHeight() * 0.64f)));
+        return l.getFont();
+    }
+
+    // Knobs: the dial on top, the value text box directly under it. The vertical fader leaves a gap
+    // (property "gap", in pixels) between the fader and its value, where the "a" label sits.
+    juce::Slider::SliderLayout getSliderLayout (juce::Slider& s) override
+    {
+        if (s.getTextBoxPosition() == juce::Slider::TextBoxBelow && (s.isRotary() || s.isVertical()))
+        {
+            juce::Slider::SliderLayout l;
+            auto b = s.getLocalBounds();
+            const int gap = (int) s.getProperties().getWithDefault ("gap", 0);
+            l.textBoxBounds = b.removeFromBottom (s.getTextBoxHeight());
+            l.sliderBounds = b.withTrimmedBottom (gap);
+            return l;
+        }
+        return juce::LookAndFeel_V4::getSliderLayout (s);
+    }
+
+    int getSliderThumbRadius (juce::Slider& s) override
+    {
+        if (s.isVertical()) return juce::roundToInt (juce::jmin ((float) s.getWidth() * 0.4f, 38.0f) * 0.62f * 0.5f) + 1;
+        return juce::LookAndFeel_V4::getSliderThumbRadius (s);
+    }
+
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float a0, float a1, juce::Slider& s) override
     {
         const auto b = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h);
         const float d = juce::jmin (b.getWidth(), b.getHeight());
-        const float thick = juce::jmax (2.5f, d * 0.09f);
+        const float u = d / 100.0f;
         const auto c = b.getCentre();
-        const float r = d * 0.5f - thick;
-        const float alpha = s.isEnabled() ? 1.0f : 0.35f;
+        const float alpha = s.isEnabled() ? 1.0f : 0.38f;
+        const float thick = juce::jmax (2.0f, 3.5f * u);
+        const float r = 46.0f * u;
         const juce::PathStrokeType stroke (thick, juce::PathStrokeType::curved, juce::PathStrokeType::rounded);
 
         juce::Path track;
@@ -74,35 +111,50 @@ public:
         g.strokePath (track, stroke);
 
         const float ang = a0 + pos * (a1 - a0);
-        if (pos > 0.002f)
+        if (pos > 0.004f)
         {
             juce::Path v;
             v.addCentredArc (c.x, c.y, r, r, 0.0f, a0, ang, true);
             g.setColour (s.findColour (juce::Slider::rotarySliderFillColourId).withMultipliedAlpha (alpha));
             g.strokePath (v, stroke);
         }
-        const float tr = thick * 0.8f;
-        const float px = c.x + r * std::sin (ang), py = c.y - r * std::cos (ang);
-        g.setColour (kText.withMultipliedAlpha (alpha));
-        g.fillEllipse (px - tr, py - tr, tr * 2.0f, tr * 2.0f);
+        g.setColour (kCap.withMultipliedAlpha (alpha));
+        g.fillEllipse (c.x - 37.0f * u, c.y - 37.0f * u, 74.0f * u, 74.0f * u);
+        const float s0 = std::sin (ang), c0 = std::cos (ang);
+        g.setColour (juce::Colour (0xff111111).withMultipliedAlpha (alpha));
+        g.drawLine (c.x + 14.0f * u * s0, c.y - 14.0f * u * c0, c.x + 33.0f * u * s0, c.y - 33.0f * u * c0, juce::jmax (2.0f, 4.0f * u));
     }
 
     void drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float minPos, float maxPos,
                            juce::Slider::SliderStyle style, juce::Slider& s) override
     {
+        const float alpha = s.isEnabled() ? 1.0f : 0.35f;
+        if (style == juce::Slider::LinearVertical)
+        {
+            // The crossfade fader: a thin track and a cream handle with a dark line, like the module's fader.
+            const float cx = (float) x + (float) w * 0.5f;
+            g.setColour (kTrack.withMultipliedAlpha (alpha));
+            g.drawLine (cx, (float) y, cx, (float) (y + h), 3.0f);
+            const float hw = juce::jmin ((float) w * 0.4f, 38.0f), hh = hw * 0.62f;
+            const auto hand = juce::Rectangle<float> (cx - hw * 0.5f, pos - hh * 0.5f, hw, hh);
+            g.setColour (kCap.withMultipliedAlpha (alpha));
+            g.fillRoundedRectangle (hand, hh * 0.25f);
+            g.setColour (juce::Colour (0xff111111));
+            g.drawLine (hand.getX() + hw * 0.22f, pos, hand.getRight() - hw * 0.22f, pos, 2.0f);
+            return;
+        }
         if (style != juce::Slider::LinearHorizontal)
         {
             juce::LookAndFeel_V4::drawLinearSlider (g, x, y, w, h, pos, minPos, maxPos, style, s);
             return;
         }
-        const float alpha = s.isEnabled() ? 1.0f : 0.35f;
         const float th = 4.0f, cy = (float) y + (float) h * 0.5f;
         g.setColour (kTrack.withMultipliedAlpha (alpha));
         g.fillRoundedRectangle ((float) x, cy - th * 0.5f, (float) w, th, th * 0.5f);
         g.setColour (s.findColour (juce::Slider::trackColourId).withMultipliedAlpha (alpha));
         g.fillRoundedRectangle ((float) x, cy - th * 0.5f, juce::jmax (th, pos - (float) x), th, th * 0.5f);
         const float tr = juce::jmin (6.0f, (float) h * 0.45f);
-        g.setColour (kText.withMultipliedAlpha (alpha));
+        g.setColour (kCap.withMultipliedAlpha (alpha));
         g.fillEllipse (pos - tr, cy - tr, tr * 2.0f, tr * 2.0f);
     }
 
@@ -110,45 +162,89 @@ public:
     {
         const auto r = b.getLocalBounds().toFloat().reduced (0.5f);
         const bool on = b.getToggleState();
+        if (b.getProperties().contains ("tab"))
+        {
+            if (on)
+            {
+                g.setColour (kCap);
+                g.fillRect (r.getX() + 2.0f, r.getBottom() - 2.0f, r.getWidth() - 4.0f, 2.0f);
+            }
+            return;
+        }
         const float a = b.isEnabled() ? 1.0f : 0.4f;
         const auto onCol = b.findColour (juce::TextButton::buttonOnColourId);
         const auto fill = on ? onCol : down ? kTrack : hi ? kPanel2.brighter (0.2f) : juce::Colours::transparentBlack;
+        const float rad = r.getHeight() * 0.5f;
         g.setColour (fill.withMultipliedAlpha (a));
-        g.fillRoundedRectangle (r, 4.0f);
+        g.fillRoundedRectangle (r, rad);
         g.setColour ((on ? onCol : hi ? kDim : kEdge).withMultipliedAlpha (a));
-        g.drawRoundedRectangle (r, 4.0f, 1.0f);
+        g.drawRoundedRectangle (r, rad, 1.0f);
     }
 
-    juce::Font getTextButtonFont (juce::TextButton&, int h) override
+    juce::Font getTextButtonFont (juce::TextButton& b, int h) override
     {
+        if (b.getProperties().contains ("tab"))
+            return juce::Font (juce::FontOptions (juce::jlimit (10.0f, 18.0f, (float) h * 0.55f)));
         return juce::Font (juce::FontOptions ((float) juce::jlimit (9, 14, (int) ((float) h * 0.42f))).withStyle ("Bold"));
     }
 
     void drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool) override
     {
         g.setFont (getTextButtonFont (b, b.getHeight()));
-        g.setColour (b.findColour (b.getToggleState() ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId)
-                         .withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.4f));
+        const bool tab = b.getProperties().contains ("tab");
+        auto col = tab ? (b.getToggleState() ? kText : kDim)
+                       : b.findColour (b.getToggleState() ? juce::TextButton::textColourOnId : juce::TextButton::textColourOffId);
+        g.setColour (col.withMultipliedAlpha (b.isEnabled() ? 1.0f : 0.4f));
         g.drawFittedText (b.getButtonText(), b.getLocalBounds().reduced (3, 1), juce::Justification::centred, 1, 0.7f);
     }
 
     void drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool, bool) override
     {
-        const float h = (float) b.getHeight();
-        const float box = juce::jmin (16.0f, h - 4.0f);
         const float a = b.isEnabled() ? 1.0f : 0.4f;
-        const auto r = juce::Rectangle<float> (2.0f, (h - box) * 0.5f, box, box);
+        const float W = (float) b.getWidth(), H = (float) b.getHeight();
+        const bool on = b.getToggleState();
+        if (b.getProperties().contains ("switch"))
+        {
+            // Pill switch with its name underneath (Flux on, Grit on).
+            const float ph = juce::jmin (H * 0.5f, 24.0f), pw = ph * 1.8f;
+            const auto pill = juce::Rectangle<float> ((W - pw) * 0.5f, 1.0f, pw, ph);
+            g.setColour ((on ? kCap : kTrack).withMultipliedAlpha (a));
+            g.fillRoundedRectangle (pill, ph * 0.5f);
+            const float tr = ph * 0.36f;
+            const float tx = on ? pill.getRight() - ph * 0.5f : pill.getX() + ph * 0.5f;
+            g.setColour ((on ? juce::Colour (0xff111111) : kCap).withMultipliedAlpha (a));
+            g.fillEllipse (tx - tr, pill.getCentreY() - tr, tr * 2.0f, tr * 2.0f);
+            g.setColour (kLabel.withMultipliedAlpha (a));
+            g.setFont (juce::Font (juce::FontOptions (juce::jlimit (10.0f, 15.0f, H * 0.3f))));
+            g.drawText (b.getButtonText(), juce::Rectangle<float> (0.0f, ph + 3.0f, W, H - ph - 3.0f), juce::Justification::centredTop);
+            return;
+        }
+        if (b.getProperties().contains ("dot"))
+        {
+            // Routing choice: a dot and its name.
+            const float dr = juce::jmin (4.5f, H * 0.25f);
+            const float cy = H * 0.5f;
+            g.setColour ((on ? kCap : kDim).withMultipliedAlpha (a));
+            if (on) g.fillEllipse (2.0f, cy - dr, dr * 2.0f, dr * 2.0f);
+            else    g.drawEllipse (2.0f + 0.5f, cy - dr + 0.5f, dr * 2.0f - 1.0f, dr * 2.0f - 1.0f, 1.0f);
+            g.setColour ((on ? kText : kDim).withMultipliedAlpha (a));
+            g.setFont (juce::Font (juce::FontOptions (juce::jlimit (10.0f, 15.0f, H * 0.6f))));
+            g.drawFittedText (b.getButtonText(), b.getLocalBounds().withTrimmedLeft ((int) (dr * 2.0f + 10.0f)), juce::Justification::centredLeft, 1, 0.8f);
+            return;
+        }
+        const float box = juce::jmin (16.0f, H - 4.0f);
+        const auto r = juce::Rectangle<float> (2.0f, (H - box) * 0.5f, box, box);
         g.setColour (kPanel2.withMultipliedAlpha (a));
         g.fillRoundedRectangle (r, 3.0f);
         g.setColour (kEdge.withMultipliedAlpha (a));
         g.drawRoundedRectangle (r.reduced (0.5f), 3.0f, 1.0f);
-        if (b.getToggleState())
+        if (on)
         {
             g.setColour (b.findColour (juce::ToggleButton::tickColourId).withMultipliedAlpha (a));
             g.fillRoundedRectangle (r.reduced (3.5f), 2.0f);
         }
         g.setColour (b.findColour (juce::ToggleButton::textColourId).withMultipliedAlpha (a));
-        g.setFont (juce::Font (juce::FontOptions (juce::jlimit (10.0f, 15.0f, h * 0.55f))));
+        g.setFont (juce::Font (juce::FontOptions (juce::jlimit (10.0f, 15.0f, H * 0.55f))));
         g.drawFittedText (b.getButtonText(), b.getLocalBounds().withTrimmedLeft ((int) (box + 8.0f)), juce::Justification::centredLeft, 1, 0.8f);
     }
 
@@ -157,10 +253,10 @@ public:
         const float a = box.isEnabled() ? 1.0f : 0.45f;
         const auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (0.5f);
         g.setColour (kPanel2.withMultipliedAlpha (a));
-        g.fillRoundedRectangle (r, 4.0f);
+        g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
         g.setColour (kEdge.withMultipliedAlpha (a));
-        g.drawRoundedRectangle (r, 4.0f, 1.0f);
-        const float cx = (float) w - 12.0f, cy = (float) h * 0.5f;
+        g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.0f);
+        const float cx = (float) w - 14.0f, cy = (float) h * 0.5f;
         juce::Path chevron;
         chevron.startNewSubPath (cx - 4.0f, cy - 2.0f);
         chevron.lineTo (cx, cy + 2.0f);
@@ -176,9 +272,27 @@ public:
 
     void positionComboBoxText (juce::ComboBox& box, juce::Label& label) override
     {
-        label.setBounds (6, 1, box.getWidth() - 22, box.getHeight() - 2);
+        label.setBounds (10, 1, box.getWidth() - 28, box.getHeight() - 2);
         label.setFont (getComboBoxFont (box));
     }
+};
+
+//==============================================================================
+// The panel behind the lower pages (setup, mods, cv, midi, files). The page's controls sit on top of it.
+class UnofficialSpotykachEditor::PagePanel : public juce::Component
+{
+public:
+    void paint (juce::Graphics& g) override
+    {
+        const auto r = getLocalBounds().toFloat().reduced (0.5f);
+        g.setColour (kPanel);
+        g.fillRoundedRectangle (r, 14.0f);
+        g.setColour (kBorder);
+        g.drawRoundedRectangle (r, 14.0f, 1.0f);
+        if (drawExtra) drawExtra (g);
+    }
+
+    std::function<void (juce::Graphics&)> drawExtra;     // drawn above the background (the mod meters)
 };
 
 //==============================================================================
@@ -220,7 +334,7 @@ public:
             "Built with JUCE. This plug-in is licensed under the GNU AGPLv3; see "
             "LICENSE and THIRD-PARTY-LICENSES.txt that came with the download. Source code: github.com/particledots/Unofficial-Spotykach.\n\n"
             "Both decks with Reel, Slice and Drift modes, Flux and Grit effects, two modulators that you can patch to a destination, a trigger sequencer per deck, MIDI notes and CCs (firmware map), CV-style automation inputs, fit tempo to loop, routing, A/B crossfade, tempo (internal, host or tap), launch quantise, loading and saving WAV files, and input and output trims. "
-            "The window layout follows the original panel mockup. Loops come back with the project through a link to their WAV file (the project holds no audio).",
+            "The window is laid out after the module's front panel (a plug-in interpretation, not a copy of Synthux's artwork). Loops come back with the project through a link to their WAV file (the project holds no audio).",
             r.removeFromTop (r.getHeight() - 44), juce::Justification::topLeft, 20);
     }
 
@@ -286,34 +400,49 @@ void UnofficialSpotykachEditor::pulse (const juce::String& paramId)
     });
 }
 
+// A knob: arc and cream cap, the value under it (the slider's text box) and a name under that.
+void UnofficialSpotykachEditor::setupKnob (Knob& k, const juce::String& paramId, const juce::String& text, juce::Colour accent)
+{
+    k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+    k.slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
+    k.slider.setColour (juce::Slider::rotarySliderFillColourId, accent);
+    addAndMakeVisible (k.slider);
+    k.label.setText (text, juce::dontSendNotification);
+    k.label.setJustificationType (juce::Justification::centred);
+    k.label.setColour (juce::Label::textColourId, kLabel);
+    addAndMakeVisible (k.label);
+    k.attachment = std::make_unique<SliderAtt> (proc.apvts, paramId, k.slider);
+}
+
 void UnofficialSpotykachEditor::setupDeck (int d)
 {
+    using P = UnofficialSpotykachProcessor;
     auto& ui = deckUI[(size_t) d];
     const juce::String tag = d == 0 ? "A" : "B";
 
     ui.accent = d == 0 ? kAccent : kViolet;
-    ui.title.setText ("DECK " + tag, juce::dontSendNotification);
+    ui.title.setText (d == 0 ? "deck a" : "deck b", juce::dontSendNotification);
     ui.title.setColour (juce::Label::textColourId, ui.accent);
     addAndMakeVisible (ui.title);
     ui.status.setColour (juce::Label::textColourId, kDim);
     ui.status.setJustificationType (juce::Justification::centred);
-    ui.status.setMinimumHorizontalScale (0.8f);
+    ui.status.setMinimumHorizontalScale (0.7f);
     addAndMakeVisible (ui.status);
 
-    static const char* btnText[UnofficialSpotykachProcessor::kNumDeckButtons] = { "REC", "PLAY", "REV", "TRIG", "FROM", "SEQ", "CLEAR", "FIT" };
-    static const char* btnTip[UnofficialSpotykachProcessor::kNumDeckButtons] = {
+    static const char* btnText[P::kNumDeckButtons] = { "rec", "play", "rev", "trig", "from", "seq", "clear", "FIT" };
+    static const char* btnTip[P::kNumDeckButtons] = {
         "Record from the plug-in input (press again to stop)", "Play / stop", "Play in reverse / stop",
         "Trigger the loop with the current settings",
         "Record the other deck's output into this deck (press again to stop)",
         "Trigger sequencer: press to arm, then tap TRIG to record a rhythm; press SEQ again to stop recording",
         "Hold for 1.5 seconds to clear the trigger sequence",
         "Set the tempo so this deck's loop lasts the chosen number of beats (Source becomes Internal)" };
-    for (int i = 0; i < UnofficialSpotykachProcessor::kNumDeckButtons; ++i)
+    for (int i = 0; i < P::kNumDeckButtons; ++i)
     {
         auto& b = ui.buttons[(size_t) i];
-        b.setButtonText (i == 4 ? juce::String ("FROM ") + (d == 0 ? "B" : "A") : i == 7 ? juce::String ("FIT ") + tag : juce::String (btnText[i]));
+        b.setButtonText (i == 4 ? juce::String ("from ") + (d == 0 ? "b" : "a") : i == 7 ? juce::String ("FIT ") + tag : juce::String (btnText[i]));
         b.setTooltip (btnTip[i]);
-        const auto id = UnofficialSpotykachProcessor::deckId (d, UnofficialSpotykachProcessor::deckButtonBase (i));
+        const auto id = P::deckId (d, P::deckButtonBase (i));
         if (i == 6)
         {
             // CLEAR needs a 1.5 s hold (the firmware's Hold<1500>); the timer fires it.
@@ -326,31 +455,21 @@ void UnofficialSpotykachEditor::setupDeck (int d)
         }
         else
             b.onClick = [this, id] { pulse (id); };
-        if (i == 5) { b.setColour (juce::TextButton::buttonOnColourId, kRec); b.setColour (juce::TextButton::textColourOnId, kText); }
-        if (i < UnofficialSpotykachProcessor::kRowButtons) addAndMakeVisible (b);
+        if (i == 0 || i == 5) { b.setColour (juce::TextButton::buttonOnColourId, kRec); b.setColour (juce::TextButton::textColourOnId, kText); }
+        if (i == 1 || i == 2) b.setColour (juce::TextButton::buttonOnColourId, ui.accent);
+        if (i < P::kRowButtons) addAndMakeVisible (b);
         else addChildComponent (b);
     }
 
     static const char* base[6] = { "position", "size", "pitch", "envelope", "mix", "feedback" };
-    static const char* text[6] = { "Position", "Size", "Pitch", "Envelope", "Mix", "Feedback" };
+    static const char* text[6] = { "position", "size", "pitch", "envelope", "mix", "feedback" };
     for (size_t i = 0; i < 6; ++i)
-    {
-        auto& k = ui.knobs[i];
-        k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        k.slider.setColour (juce::Slider::rotarySliderFillColourId, ui.accent);
-        addAndMakeVisible (k.slider);
-        k.label.setText (text[i], juce::dontSendNotification);
-        k.label.setJustificationType (juce::Justification::centred);
-        k.label.setColour (juce::Label::textColourId, kText);
-        addAndMakeVisible (k.label);
-        k.attachment = std::make_unique<SliderAtt> (proc.apvts, UnofficialSpotykachProcessor::deckId (d, base[i]), k.slider);
-    }
+        setupKnob (ui.knobs[i], P::deckId (d, base[i]), text[i], ui.accent);
 
-    using P = UnofficialSpotykachProcessor;
     addCombo (ui.mode, P::deckId (d, "mode"), "Mode");
     ui.mode.label.setVisible (false);
-    ui.mode.box.setVisible (false);      // the chips below drive it; the combo stays as the parameter attachment
-    static const char* chipText[3] = { "REEL", "SLICE", "DRIFT" };
+    ui.mode.box.setVisible (false);      // the buttons below drive it; the combo stays as the parameter attachment
+    static const char* chipText[3] = { "reel", "slice", "drift" };
     for (int i = 0; i < 3; ++i)
     {
         auto& c = ui.modeChip[(size_t) i];
@@ -360,27 +479,18 @@ void UnofficialSpotykachEditor::setupDeck (int d)
         c.onClick = [this, d, i] { deckUI[(size_t) d].mode.box.setSelectedItemIndex (i, juce::sendNotificationSync); };
         addAndMakeVisible (c);
     }
-    addCombo (ui.snap, P::deckId (d, "pitchSnap"), "Pitch Snap");
-    addLabelled (ui.offset,    P::deckId (d, "sliceOffset"), "Slice Offset", juce::Slider::LinearHorizontal);
-    addLabelled (ui.envLength, P::deckId (d, "envLength"),   "Env Length",   juce::Slider::LinearHorizontal);
-    addLabelled (ui.window,    P::deckId (d, "window"),      "Window",       juce::Slider::LinearHorizontal);
-    for (auto* ls : { &ui.offset, &ui.envLength, &ui.window }) ls->slider.setColour (juce::Slider::trackColourId, ui.accent);
+    addCombo (ui.snap, P::deckId (d, "pitchSnap"), "pitch snap");
+    ui.snap.label.setColour (juce::Label::textColourId, kLabel);
+    ui.snap.label.setJustificationType (d == 0 ? juce::Justification::centredLeft : juce::Justification::centredRight);
+    setupKnob (ui.offset,    P::deckId (d, "sliceOffset"), "slice offset", ui.accent);
+    setupKnob (ui.envLength, P::deckId (d, "envLength"),   "env length",   ui.accent);
+    setupKnob (ui.window,    P::deckId (d, "window"),      "window",       ui.accent);
 
-    // FX page: Flux (delay) and Grit (drive / reduce / filter). Shown instead of the loop knobs when FX is pressed.
+    // Flux (delay) and Grit (drive / reduce / filter): always on the panel, as in the mockup.
     static const char* fxBase[6] = { "fluxTime", "fluxFeedback", "fluxMix", "gritIntensity", "gritMix", "gritCharacter" };
-    static const char* fxText[6] = { "Flux Time", "Flux Feedback", "Flux Mix", "Grit Intensity", "Grit Mix", "Grit Character" };
+    static const char* fxText[6] = { "time", "feedback", "mix", "intensity", "mix", "character" };
     for (size_t i = 0; i < 6; ++i)
-    {
-        auto& k = ui.fxKnobs[i];
-        k.slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        k.slider.setColour (juce::Slider::rotarySliderFillColourId, ui.accent);
-        addChildComponent (k.slider);
-        k.label.setText (fxText[i], juce::dontSendNotification);
-        k.label.setJustificationType (juce::Justification::centred);
-        k.label.setColour (juce::Label::textColourId, kText);
-        addChildComponent (k.label);
-        k.attachment = std::make_unique<SliderAtt> (proc.apvts, P::deckId (d, fxBase[i]), k.slider);
-    }
+        setupKnob (ui.fxKnobs[i], P::deckId (d, fxBase[i]), fxText[i], ui.accent);
     ui.fxKnobs[0].slider.textFromValueFunction = [this, d] (double v)
     {
         const int mode = juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId (d, "fluxMode"))->load());
@@ -401,26 +511,20 @@ void UnofficialSpotykachEditor::setupDeck (int d)
     };
     for (auto* b : { &ui.fluxOn, &ui.gritOn })
     {
+        b->getProperties().set ("switch", true);
         b->setColour (juce::ToggleButton::textColourId, kText);
         b->setColour (juce::ToggleButton::tickColourId, ui.accent);
-        addChildComponent (*b);
+        addAndMakeVisible (*b);
     }
+    ui.fluxOn.setTooltip ("Flux on (latching; the firmware's pad is momentary unless Alt is held)");
+    ui.gritOn.setTooltip ("Grit on (latching; the firmware's pad is momentary unless Alt is held)");
     ui.fluxOnAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, P::deckId (d, "fluxOn"), ui.fluxOn);
     ui.gritOnAtt = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, P::deckId (d, "gritOn"), ui.gritOn);
     addCombo (ui.fluxMode, P::deckId (d, "fluxMode"), "Flux Mode");
     addCombo (ui.gritMode, P::deckId (d, "gritMode"), "Grit Mode");
-    for (auto* cb : { &ui.fluxMode, &ui.gritMode }) { cb->box.setVisible (false); cb->label.setVisible (false); }
-
-    addAndMakeVisible (ui.pageButton);
-    ui.pageButton.setClickingTogglesState (true);
-    ui.pageButton.setColour (juce::TextButton::buttonOnColourId, ui.accent);
-    ui.pageButton.setTooltip ("Flux and Grit effects for this deck");
-    ui.pageButton.onClick = [this, d]
-    {
-        deckUI[(size_t) d].fxPage = deckUI[(size_t) d].pageButton.getToggleState();
-        showPage (d);
-        resized();
-    };
+    ui.fluxMode.box.setTooltip ("Flux mode: Free (milliseconds) or Clocked (note lengths at the tempo)");
+    ui.gritMode.box.setTooltip ("Grit mode: Drive, Reduce or Filter");
+    for (auto* cb : { &ui.fluxMode, &ui.gritMode }) cb->label.setVisible (false);
 
     // With Pitch Snap on, the knob itself jumps to the snapped position while you drag it.
     ui.knobs[2].slider.onValueChange = [this, d]
@@ -442,19 +546,6 @@ void UnofficialSpotykachEditor::setupDeck (int d)
         const float st = 12.0f * std::log2 (speed);
         return juce::String (st >= 0 ? "+" : "") + juce::String (st, snap == 0 ? 1 : 0) + " st";
     };
-}
-
-void UnofficialSpotykachEditor::showPage (int d)
-{
-    auto& ui = deckUI[(size_t) d];
-    const bool fx = ui.fxPage;
-    for (auto& k : ui.knobs)   { k.slider.setVisible (! fx); k.label.setVisible (! fx); }
-    for (auto& k : ui.fxKnobs) { k.slider.setVisible (fx);   k.label.setVisible (fx); }
-    ui.snap.box.setVisible (! fx);   ui.snap.label.setVisible (! fx);
-    for (auto* ls : { &ui.offset, &ui.envLength, &ui.window }) { ls->slider.setVisible (! fx); ls->label.setVisible (! fx); }
-    ui.fluxOn.setVisible (fx);  ui.gritOn.setVisible (fx);
-    ui.fluxMode.box.setVisible (fx);  ui.gritMode.box.setVisible (fx);
-    ui.mode.box.setVisible (false);
 }
 
 void UnofficialSpotykachEditor::setupMod (int m)
@@ -516,6 +607,17 @@ void UnofficialSpotykachEditor::showGlobalPage()
     modsTab.setToggleState (mods, juce::dontSendNotification);
     cvTab.setToggleState (cv, juce::dontSendNotification);
     midiTab.setToggleState (midi, juce::dontSendNotification);
+
+    // The page opens as a panel over the lower part of the window; its controls are raised above the panel.
+    if (pagePanel != nullptr)
+    {
+        pagePanel->setVisible (page >= 0);
+        if (page >= 0)
+        {
+            pagePanel->toFront (false);
+            for (auto* c : pageWidgets) c->toFront (false);
+        }
+    }
     repaint();
 }
 
@@ -544,44 +646,63 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
 {
     setLookAndFeel (laf.get());
 
-    titleLabel.setText ("SPOTYKACH", juce::dontSendNotification);
+    titleLabel.setText ("unofficial spotykach", juce::dontSendNotification);
     titleLabel.setColour (juce::Label::textColourId, kText);
     addAndMakeVisible (titleLabel);
-    unofficialLabel.setText ("UNOFFICIAL", juce::dontSendNotification);
-    unofficialLabel.setColour (juce::Label::textColourId, kText);
-    unofficialLabel.setColour (juce::Label::outlineColourId, kText);
-    unofficialLabel.setJustificationType (juce::Justification::centred);
-    addAndMakeVisible (unofficialLabel);
-    taglineLabel.setText ("Community port. Not an official Synthux Academy product, not affiliated with Synthux Academy.", juce::dontSendNotification);
-    taglineLabel.setColour (juce::Label::textColourId, kDim);
-    taglineLabel.setJustificationType (juce::Justification::centred);
-    taglineLabel.setMinimumHorizontalScale (0.8f);
-    addAndMakeVisible (taglineLabel);
-    inputLabel.setText ("INPUT", juce::dontSendNotification);
+    hintLabel.setText ("MIDI notes ch 1 / 2 | CC 3 14 15 20-28 85 86 89 90 102-109", juce::dontSendNotification);
+    hintLabel.setColour (juce::Label::textColourId, kDim);
+    hintLabel.setJustificationType (juce::Justification::centredRight);
+    hintLabel.setMinimumHorizontalScale (0.7f);
+    addAndMakeVisible (hintLabel);
+    footerLabel.setText ("Based on the open-source Spotykach firmware (Synthux Academy, MIT). Not a Synthux Academy product.", juce::dontSendNotification);
+    footerLabel.setColour (juce::Label::textColourId, juce::Colour (0xff8c8678));
+    footerLabel.setJustificationType (juce::Justification::topRight);
+    footerLabel.setMinimumHorizontalScale (1.0f);
+    addAndMakeVisible (footerLabel);
+    inputLabel.setText ("input level", juce::dontSendNotification);
     inputLabel.setColour (juce::Label::textColourId, kDim);
+    inputLabel.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (inputLabel);
 
     versionLabel.setText (versionString(), juce::dontSendNotification);
     versionLabel.setColour (juce::Label::textColourId, kDim);
-    versionLabel.setJustificationType (juce::Justification::centredRight);
+    versionLabel.setJustificationType (juce::Justification::centredLeft);
     addAndMakeVisible (versionLabel);
 
     setupDeck (0);
     setupDeck (1);
 
-    addLabelled (crossfade, "crossfade", "A/B CROSSFADE", juce::Slider::LinearHorizontal);
+    // Global controls. Tempo, click and output are knobs like the deck knobs; the crossfade is a vertical fader.
+    auto knobStyle = [] (LabelledSlider& ls)
+    {
+        ls.slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
+        ls.slider.setColour (juce::Slider::rotarySliderFillColourId, kCap);
+        ls.label.setJustificationType (juce::Justification::centred);
+        ls.label.setColour (juce::Label::textColourId, kLabel);
+    };
+    addLabelled (crossfade, "crossfade", "a / b mix", juce::Slider::LinearVertical);
+    crossfade.label.setJustificationType (juce::Justification::centred);
+    crossfade.label.setColour (juce::Label::textColourId, kLabel);
     addLabelled (panSpeed,  "panSpeed",  "Pan Speed",     juce::Slider::LinearHorizontal);
     addLabelled (panRange,  "panRange",  "Pan Range",     juce::Slider::LinearHorizontal);
-    addLabelled (outLevel,  "outLevel",  "OUTPUT LEVEL",  juce::Slider::LinearHorizontal);
+    addLabelled (outLevel,  "outLevel",  "output",        juce::Slider::RotaryHorizontalVerticalDrag);
     outLevel.slider.setTextValueSuffix (" dB");
-    addLabelled (tempo, "tempo", "Tempo", juce::Slider::LinearHorizontal);
-    addLabelled (click, "click", "CLICK", juce::Slider::LinearHorizontal);
-    addCombo (tempoSource, "tempoSource", "CLOCK SOURCE");
-    addCombo (quantise, "quantise", "LAUNCH QUANTISE");
-    for (auto* l : { &crossfade.label, &panSpeed.label, &panRange.label, &outLevel.label, &tempo.label, &click.label,
-                     &tempoSource.label, &quantise.label })
+    addLabelled (tempo, "tempo", "tempo", juce::Slider::RotaryHorizontalVerticalDrag);
+    addLabelled (click, "click", "click", juce::Slider::RotaryHorizontalVerticalDrag);
+    knobStyle (outLevel); knobStyle (tempo); knobStyle (click);
+    addCombo (tempoSource, "tempoSource", "clock");
+    addCombo (quantise, "quantise", "launch quantise");
+    for (auto* l : { &tempoSource.label, &quantise.label })
+    {
         l->setColour (juce::Label::textColourId, kDim);
+        l->setJustificationType (juce::Justification::centred);
+    }
     for (auto* ls : { &panSpeed, &panRange }) ls->label.setColour (juce::Label::textColourId, kText);
+    abLabel[0].setText ("b", juce::dontSendNotification);
+    abLabel[1].setText ("a", juce::dontSendNotification);
+    abLabel[0].setColour (juce::Label::textColourId, kViolet);
+    abLabel[1].setColour (juce::Label::textColourId, kAccent);
+    for (auto& l : abLabel) { l.setJustificationType (juce::Justification::centred); addAndMakeVisible (l); }
     setupMod (0);
     setupMod (1);
     addAndMakeVisible (tapButton);
@@ -589,13 +710,25 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     tapButton.onClick = [this] { tap(); };
     for (auto* b : { &setupTab, &modsTab, &cvTab, &midiTab, &filesTab })
     {
+        b->getProperties().set ("tab", true);
         addAndMakeVisible (*b);
     }
-    setupTab.onClick = [this] { page = 0; showGlobalPage(); resized(); };
-    modsTab.onClick  = [this] { page = 1; showGlobalPage(); resized(); };
-    cvTab.onClick    = [this] { page = 2; showGlobalPage(); resized(); };
-    midiTab.onClick  = [this] { page = 3; showGlobalPage(); resized(); };
-    filesTab.onClick = [this] { page = 4; showGlobalPage(); resized(); };
+    setupTab.setButtonText ("setup"); modsTab.setButtonText ("mods"); cvTab.setButtonText ("cv");
+    midiTab.setButtonText ("midi");   filesTab.setButtonText ("files");
+    // A tab opens its page over the lower part of the window; the same tab again closes it.
+    setupTab.onClick = [this] { page = page == 0 ? -1 : 0; showGlobalPage(); resized(); };
+    modsTab.onClick  = [this] { page = page == 1 ? -1 : 1; showGlobalPage(); resized(); };
+    cvTab.onClick    = [this] { page = page == 2 ? -1 : 2; showGlobalPage(); resized(); };
+    midiTab.onClick  = [this] { page = page == 3 ? -1 : 3; showGlobalPage(); resized(); };
+    filesTab.onClick = [this] { page = page == 4 ? -1 : 4; showGlobalPage(); resized(); };
+    setupTab.setTooltip ("Generative pan and fit tempo to loop");
+    modsTab.setTooltip ("Modulators");
+    cvTab.setTooltip ("CV-style automation inputs");
+    midiTab.setTooltip ("MIDI channels, transport and monitor");
+    filesTab.setTooltip ("Load and save loops, input and output trims");
+
+    pagePanel = std::make_unique<PagePanel>();
+    addChildComponent (*pagePanel);
 
     // FILES page: load / save a deck's loop as a WAV, the home folder, and the trims.
     for (int d = 0; d < 2; ++d)
@@ -671,13 +804,30 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     addAndMakeVisible (midiHint);
     seenFitFail = proc.engineStatus().fitFailSeq.load();
 
-    routeLabel.setText ("ROUTING", juce::dontSendNotification);
+    routeLabel.setText ("routing", juce::dontSendNotification);
     routeLabel.setColour (juce::Label::textColourId, kDim);
+    routeLabel.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (routeLabel);
     if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (proc.apvts.getParameter ("route")))
         routeBox.addItemList (choice->choices, 1);
-    addAndMakeVisible (routeBox);
+    addChildComponent (routeBox);           // hidden: the parameter attachment; the three dots drive it
     routeAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "route", routeBox);
+    {
+        static const char* routeText[3] = { "dual mono", "stereo", "generative" };
+        static const char* routeTip[3] = {
+            "Input A feeds Deck A, input B feeds Deck B; outputs A (left) and B (right)",
+            "Both inputs feed both decks; outputs are left and right",
+            "Generative: the decks are panned randomly (see Pan Speed and Pan Range on the setup tab)" };
+        for (int i = 0; i < 3; ++i)
+        {
+            auto& b = routeBtn[(size_t) i];
+            b.setButtonText (routeText[i]);
+            b.setTooltip (routeTip[i]);
+            b.getProperties().set ("dot", true);
+            b.onClick = [this, i] { routeBox.setSelectedItemIndex (i, juce::sendNotificationSync); };
+            addAndMakeVisible (b);
+        }
+    }
 
     aboutButton.onClick = [this]
     {
@@ -688,18 +838,61 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
 
     about = std::make_unique<AboutPanel>();
     addChildComponent (*about);
+
+    // Everything that lives on a lower page; raised above the page panel when a page opens.
+    pageWidgets = { &panSpeed.slider, &panSpeed.label, &panRange.slider, &panRange.label,
+                    &fitBeats[0].slider, &fitBeats[0].label, &fitBeats[1].slider, &fitBeats[1].label,
+                    &deckUI[0].buttons[7], &deckUI[1].buttons[7],
+                    &cvCrossfade.slider, &cvCrossfade.label, &cvTag[0], &cvTag[1],
+                    &midiMonitor, &midiHint, &folderButton, &folderLabel };
+    for (auto& ui : modUI)
+        for (auto* c : std::initializer_list<juce::Component*> { &ui.title, &ui.type.box, &ui.target.box, &ui.target.label,
+                                                                   &ui.cycle.slider, &ui.cycle.label, &ui.glow.slider, &ui.glow.label, &ui.sync })
+            pageWidgets.push_back (c);
+    for (auto& c : cvSliders) { pageWidgets.push_back (&c.slider); pageWidgets.push_back (&c.label); }
+    for (size_t d = 0; d < 2; ++d)
+        for (auto* c : std::initializer_list<juce::Component*> { &midiChannel[d].box, &midiChannel[d].label, &follow[d],
+                                                                   &loadButton[d], &saveButton[d], &fileTag[d], &fileStatus[d] })
+            pageWidgets.push_back (c);
+    for (auto& t : trimSliders) { pageWidgets.push_back (&t.slider); pageWidgets.push_back (&t.label); }
+
+    // The mod meters belong to the MODS page: they are drawn by the page panel, above its background.
+    pagePanel->drawExtra = [this] (juce::Graphics& g)
+    {
+        if (page != 1) return;
+        const auto& st = proc.engineStatus();
+        g.addTransform (juce::AffineTransform::translation ((float) -pageRect.getX(), (float) -pageRect.getY()));
+        for (size_t m = 0; m < 2; ++m)
+        {
+            g.setColour (kPanel2);
+            g.fillRoundedRectangle (modUI[m].meter, 3.0f * scale);
+            g.setColour (m == 0 ? kAccent : kViolet);
+            g.fillRoundedRectangle (modUI[m].meter.withWidth (modUI[m].meter.getWidth() * juce::jlimit (0.0f, 1.0f, st.modValue[m].load())), 3.0f * scale);
+        }
+    };
     showGlobalPage();
 
     // Read the remembered width FIRST: setResizeLimits() below triggers resized() at size 0, which would
     // otherwise overwrite the stored value before it is read.
-    int w = (int) proc.apvts.state.getProperty ("uiWidth", kBaseWidth);
+    int w = (int) proc.apvts.state.getProperty ("uiWidth", 0);
+    if (w <= 0)
+    {
+        // First time: open at 100 %, or smaller if the screen is not tall enough (a 1440 x 900 laptop gets about 85 %).
+        w = kBaseWidth;
+        if (auto* disp = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+        {
+            const int usableH = disp->userBounds.getHeight();
+            if (usableH > 200)
+                w = juce::jmin (w, (int) std::lround ((double) usableH * 0.92 * (double) kBaseWidth / (double) kBaseHeight));
+        }
+    }
 
     // Resizable, fixed aspect ratio. Below 75 % the labels are no longer readable.
     setResizable (true, true);
-    setResizeLimits (kBaseWidth * 3 / 4, kBaseHeight * 3 / 4, kBaseWidth * 3 / 2, kBaseHeight * 3 / 2);
+    setResizeLimits (kBaseWidth * 3 / 4, kBaseHeight * 3 / 4, kBaseWidth * 5 / 4, kBaseHeight * 5 / 4);
     getConstrainer()->setFixedAspectRatio ((double) kBaseWidth / (double) kBaseHeight);
 
-    w = juce::jlimit (kBaseWidth * 3 / 4, kBaseWidth * 3 / 2, w);
+    w = juce::jlimit (kBaseWidth * 3 / 4, kBaseWidth * 5 / 4, w);
 
     // setSize() calls resized(), so it must come after every child component exists.
     setSize (w, (int) std::lround ((double) w * kBaseHeight / kBaseWidth));
@@ -715,256 +908,262 @@ UnofficialSpotykachEditor::~UnofficialSpotykachEditor()
     setLookAndFeel (nullptr);
 }
 
+
+namespace
+{
+    // A knob in the 1280 x 960 design space: the dial centred on (cx, cy) with diameter d, the value text
+    // directly under it (the slider's text box) and the name under that.
+    void placeKnob (juce::Slider& sl, juce::Label& lb, float s, float cx, float cy, float d, float boxW, bool big)
+    {
+        auto px = [s] (float v) { return juce::roundToInt (v * s); };
+        const int tb = px (big ? 26.0f : 22.0f);
+        const int top = px (cy - d * 0.5f);
+        sl.setTextBoxStyle (juce::Slider::TextBoxBelow, false, px (boxW), tb);
+        sl.setBounds (px (cx - boxW * 0.5f), top, px (boxW), px (d) + tb);
+        lb.setFont (juce::Font (juce::FontOptions ((big ? 14.0f : 12.0f) * s)));
+        lb.setBounds (px (cx - boxW * 0.5f), top + px (d) + tb - px (2.0f), px (boxW), px (18.0f));
+    }
+
+    void arrow (juce::Graphics& g, const std::vector<juce::Point<float>>& pts, float s)
+    {
+        if (pts.size() < 2) return;
+        juce::Path p;
+        p.startNewSubPath (pts[0]);
+        for (size_t i = 1; i < pts.size(); ++i) p.lineTo (pts[i]);
+        g.setColour (juce::Colour (0xff8c8678));
+        g.strokePath (p, juce::PathStrokeType (juce::jmax (1.0f, s), juce::PathStrokeType::curved));
+        const auto a = pts[pts.size() - 2], b = pts.back();
+        const float ang = std::atan2 (b.y - a.y, b.x - a.x), len = 7.0f * s;
+        juce::Path h;
+        h.startNewSubPath (b.x - len * std::cos (ang - 0.5f), b.y - len * std::sin (ang - 0.5f));
+        h.lineTo (b);
+        h.lineTo (b.x - len * std::cos (ang + 0.5f), b.y - len * std::sin (ang + 0.5f));
+        g.setColour (juce::Colour (0xffbdb6a5));
+        g.strokePath (h, juce::PathStrokeType (juce::jmax (1.0f, s * 1.3f)));
+    }
+}
+
 void UnofficialSpotykachEditor::drawRing (juce::Graphics& g, int d)
 {
-    using P = UnofficialSpotykachProcessor;
     const auto& ui = deckUI[(size_t) d];
-    const auto& s = proc.engineStatus().deck[(size_t) d];
+    const auto& st = proc.engineStatus().deck[(size_t) d];
     const auto c = ui.ring.getCentre();
-    const float R = juce::jmin (ui.ring.getWidth(), ui.ring.getHeight()) * 0.5f - 7.0f * scale;
-    const float dotR = juce::jmax (1.5f, R * 0.04f);
-    constexpr int N = 64;
+    const float R = ui.ring.getWidth() * 0.5f;          // the outer playhead ring
+    const bool empty = st.empty.load(), rec = st.recording.load(), armed = st.armed.load(), playing = st.playing.load();
+    const bool rev = st.reverse.load();
+    const float head = juce::jlimit (0.0f, 1.0f, st.playhead.load());
+    constexpr float twoPi = juce::MathConstants<float>::twoPi;
 
-    const bool empty = s.empty.load(), rec = s.recording.load(), armed = s.armed.load(), playing = s.playing.load();
-    const bool rev = s.reverse.load();
-    const float head = juce::jlimit (0.0f, 1.0f, s.playhead.load());
+    // the concentric broken rings
+    g.setColour (juce::Colour (0xff8c8678));
+    g.strokePath (ui.bandDim, juce::PathStrokeType (juce::jmax (1.0f, scale)));
+    g.setColour (juce::Colour (0xffd9d2c0));
+    g.strokePath (ui.bandBright, juce::PathStrokeType (juce::jmax (1.0f, 1.4f * scale)));
 
-    for (int i = 0; i < N; ++i)
+    // the outer ring: loop state and playhead
+    const float thick = juce::jmax (2.0f, 3.0f * scale);
+    juce::Path full;
+    full.addEllipse (c.x - R, c.y - R, R * 2.0f, R * 2.0f);
+    g.setColour (kTrack);
+    g.strokePath (full, juce::PathStrokeType (thick * 0.6f));
+    if (rec || armed || ! empty)
     {
-        const float frac = (float) i / (float) N;
-        const float th = frac * juce::MathConstants<float>::twoPi;
-        const float x = c.x + R * std::sin (th), y = c.y - R * std::cos (th);
-        juce::Colour col = kTrack;
-        if (rec)        col = kRec.withAlpha (0.85f);
-        else if (armed) col = kRec.withAlpha (0.35f);
-        else if (! empty)
-        {
-            float behind = rev ? frac - head : head - frac;         // how far the playhead has already passed this dot
-            behind -= std::floor (behind);
-            const float glow = playing ? juce::jmax (0.0f, 1.0f - behind / 0.22f) : 0.0f;
-            col = ui.accent.withAlpha ((playing ? 0.30f : 0.45f) + 0.55f * glow);
-        }
-        g.setColour (col);
-        g.fillEllipse (x - dotR, y - dotR, dotR * 2.0f, dotR * 2.0f);
+        g.setColour (rec ? kRec.withAlpha (0.9f) : armed ? kRec.withAlpha (0.4f) : ui.accent.withAlpha (playing ? 0.30f : 0.45f));
+        g.strokePath (full, juce::PathStrokeType (thick * 0.6f));
+    }
+    if (! empty && playing && ! rec)
+    {
+        const float th = head * twoPi, len = 0.22f * twoPi;
+        juce::Path trail;
+        if (rev) trail.addCentredArc (c.x, c.y, R, R, 0.0f, th, th + len, true);
+        else     trail.addCentredArc (c.x, c.y, R, R, 0.0f, th - len, th, true);
+        g.setColour (ui.accent);
+        g.strokePath (trail, juce::PathStrokeType (thick, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
     }
     if (! empty && (playing || rec))
     {
-        const float th = head * juce::MathConstants<float>::twoPi;
-        const float hr = dotR * 2.1f;
+        const float th = head * twoPi, hr = juce::jmax (3.0f, 5.0f * scale);
         g.setColour (juce::Colours::white);
         g.fillEllipse (c.x + R * std::sin (th) - hr, c.y - R * std::cos (th) - hr, hr * 2.0f, hr * 2.0f);
     }
 
-    static const char* modeName[3] = { "REEL", "SLICE", "DRIFT" };
-    const int mode = juce::jlimit (0, 2, juce::roundToInt (proc.apvts.getRawParameterValue (P::deckId (d, "mode"))->load()));
-    g.setColour (kText);
-    g.setFont (font (15.0f, true));
-    g.drawText (modeName[mode], juce::Rectangle<float> (c.x - R * 0.7f, c.y - 20.0f * scale, R * 1.4f, 20.0f * scale).toNearestInt(), juce::Justification::centred);
     g.setColour (kDim);
     g.setFont (font (12.0f));
-    g.drawText (empty ? juce::String ("empty") : juce::String (s.loopSeconds.load(), 2) + " s",
-                juce::Rectangle<float> (c.x - R * 0.7f, c.y + 2.0f * scale, R * 1.4f, 16.0f * scale).toNearestInt(), juce::Justification::centred);
+    g.drawText (empty ? juce::String ("empty") : juce::String (st.loopSeconds.load(), 2) + " s",
+                juce::Rectangle<float> (c.x - 60.0f * scale, c.y - 92.0f * scale, 120.0f * scale, 16.0f * scale).toNearestInt(),
+                juce::Justification::centred);
 }
 
 void UnofficialSpotykachEditor::paint (juce::Graphics& g)
 {
     g.fillAll (kBg);
-    const auto& st = proc.engineStatus();
-
-    auto box = [&] (juce::Rectangle<float> r, juce::Colour fill)
+    const float s = scale;
+    for (int d = 0; d < 2; ++d)
     {
-        g.setColour (fill);
-        g.fillRoundedRectangle (r, 8.0f * scale);
-        g.setColour (kBorder);
-        g.drawRoundedRectangle (r.reduced (0.5f), 8.0f * scale, 1.0f);
-    };
-    for (size_t d = 0; d < 2; ++d)
-    {
-        box (deckUI[d].panel, kPanel);
-        drawRing (g, (int) d);
+        drawRing (g, d);
+        // thin arrows: loop controls act on the ring, the ring feeds the mix
+        const float dx = d == 0 ? kDeckAX : kDeckBX, mir = d == 1;
+        auto P = [&] (float lx, float y) { return juce::Point<float> ((dx + (mir ? kDeckW - lx : lx)) * s, y * s); };
+        arrow (g, { P (88, 222), P (112, 222), P (124, 300) }, s);
+        arrow (g, { P (88, 440), P (114, 440) }, s);
+        arrow (g, { P (426, 452), P (386, 452) }, s);
+        arrow (g, { P (335, 250), P (380, 195), P (430, 160) }, s);
     }
-    box (centrePanel, kPanel2);
-    box (bottomPanel, kPanel2);
 
-    if (page == 1)
-        for (size_t m = 0; m < 2; ++m)
-        {
-            g.setColour (kPanel);
-            g.fillRoundedRectangle (modUI[m].meter, 3.0f * scale);
-            g.setColour (m == 0 ? kAccent : kViolet);
-            g.fillRoundedRectangle (modUI[m].meter.withWidth (modUI[m].meter.getWidth() * juce::jlimit (0.0f, 1.0f, st.modValue[m].load())), 3.0f * scale);
-        }
-
-    g.setColour (kBg);
-    g.fillRoundedRectangle (meterArea, 3.0f * scale);
-    g.setColour (meterLevel > 0.99f ? juce::Colours::red : kAccent);
-    g.fillRoundedRectangle (meterArea.withWidth (meterArea.getWidth() * juce::jlimit (0.0f, 1.0f, meterLevel)), 3.0f * scale);
+    g.setColour (kPanel2);
+    g.fillRoundedRectangle (meterArea, 3.0f * s);
+    g.setColour (meterLevel > 0.99f ? juce::Colours::red : kCap);
+    g.fillRoundedRectangle (meterArea.withWidth (meterArea.getWidth() * juce::jlimit (0.0f, 1.0f, meterLevel)), 3.0f * s);
     if (infoText.isNotEmpty())
     {
         g.setColour (kDim);
         g.setFont (font (11.0f));
-        g.drawText (infoText, footerArea, juce::Justification::centredLeft);
+        g.drawFittedText (infoText, footerArea, juce::Justification::centredLeft, 2);
     }
 }
 
-void UnofficialSpotykachEditor::layoutDeck (int d, juce::Rectangle<int> area, float s)
+void UnofficialSpotykachEditor::layoutDeck (int d, float s)
 {
     auto px = [s] (float v) { return juce::roundToInt (v * s); };
     auto& ui = deckUI[(size_t) d];
-    ui.panel = area.toFloat();
-    auto r = area.reduced (px (12), px (10));
+    const bool mir = d == 1;
+    const float dx = mir ? kDeckBX : kDeckAX;
+    auto X = [&] (float lx) { return dx + (mir ? kDeckW - lx : lx); };
+    auto boxLeft = [&] (float lx, float w) { return dx + (mir ? kDeckW - lx - w : lx); };
+    const auto just = mir ? juce::Justification::centredRight : juce::Justification::centredLeft;
 
-    // Head: name on the left, the three mode buttons on the right.
-    auto head = r.removeFromTop (px (26));
-    ui.title.setFont (font (15.0f, true));
-    ui.title.setBounds (head.removeFromLeft (px (100)));
-    for (int i = 2; i >= 0; --i)
-    {
-        ui.modeChip[(size_t) i].setBounds (head.removeFromRight (px (58)));
-        head.removeFromRight (px (4));
-    }
-    r.removeFromTop (px (8));
+    ui.title.setFont (juce::Font (juce::FontOptions (22.0f * s)));
+    ui.title.setJustificationType (just);
+    ui.title.setBounds (px (boxLeft (0, 160)), px (78), px (160), px (30));
+    for (int i = 0; i < 3; ++i)
+        ui.modeChip[(size_t) i].setBounds (px (boxLeft ((float) i * 60, 56)), px (114), px (56), px (26));
+    ui.status.setFont (font (12.0f));
+    ui.status.setJustificationType (just);
+    ui.status.setBounds (px (boxLeft (0, 220)), px (148), px (220), px (16));
 
-    // Ring and pads (mirrored for Deck B, as on the hardware's reverse layout).
-    auto mid = r.removeFromTop (px (150));
-    auto ring = d == 0 ? mid.removeFromLeft (px (150)) : mid.removeFromRight (px (150));
-    ui.ring = ring.toFloat();
-    if (d == 0) mid.removeFromLeft (px (12)); else mid.removeFromRight (px (12));
-    auto padArea = mid.removeFromTop (px (104));
+    // the ring and its broken bands
+    const float cx = X (kRingCX) * s;                 // pixels
+    ui.ring = juce::Rectangle<float> (cx - (kRingR + 8.0f) * s, (kRingCY - kRingR - 8.0f) * s, (kRingR + 8.0f) * 2.0f * s, (kRingR + 8.0f) * 2.0f * s);
+    ui.bandBright.clear();
+    ui.bandDim.clear();
+    constexpr float pi = juce::MathConstants<float>::pi;
+    for (int i = 0; i < 8; ++i)
     {
-        const int g = px (6);
-        const int cw = (padArea.getWidth() - 3 * g) / 4, ch = (padArea.getHeight() - g) / 2;
-        juce::TextButton* pads[8] = { &ui.buttons[0], &ui.buttons[1], &ui.buttons[2], &ui.buttons[3],
-                                      &ui.buttons[4], &ui.buttons[5], &ui.buttons[6], &ui.pageButton };
-        for (int i = 0; i < 8; ++i)
-            pads[i]->setBounds (padArea.getX() + (i % 4) * (cw + g), padArea.getY() + (i / 4) * (ch + g), cw, ch);
-    }
-    ui.status.setFont (font (11.0f));
-    ui.status.setBounds (mid.withTrimmedTop (px (4)));
-
-    // Knobs.
-    r.removeFromTop (px (6));
-    auto knobRow = r.removeFromTop (px (112));
-    const int kw = knobRow.getWidth() / 6;
-    for (size_t i = 0; i < 6; ++i)
-    {
-        auto cell = juce::Rectangle<int> (knobRow.getX() + (int) i * kw, knobRow.getY(), kw, knobRow.getHeight());
-        for (auto* kn : { &ui.knobs[i], &ui.fxKnobs[i] })
+        const float r = kRingR - (float) i * 5.0f, circ = 2.0f * pi * r;
+        float pos = -(float) (i * 23), total = 0.0f;
+        for (int k = 0; k <= 14 && total < circ - 2.0f; ++k)
         {
-            auto c = cell;
-            kn->label.setFont (font (11.0f));
-            kn->label.setBounds (c.removeFromTop (px (14)));
-            kn->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, kw - px (4), px (17));
-            kn->slider.setBounds (c);
+            const float on = 20.0f + 90.0f * std::abs (std::sin ((float) i * 1.7f + (float) k * 2.3f));
+            const float gap = 2.0f + 14.0f * std::abs (std::cos ((float) i * 0.9f + (float) k * 1.9f));
+            const float len = juce::jmin (on, circ - total);
+            auto& path = i < 2 ? ui.bandBright : ui.bandDim;
+            path.addCentredArc (cx, kRingCY * s, r * s, r * s, 0.0f, pos / r, (pos + len) / r, true);
+            pos += on + gap;
+            total += on + gap;
         }
     }
 
-    // Two rows below: pitch snap and slice offset / env length and window, or the Flux and Grit switches.
-    r.removeFromTop (px (6));
-    auto rowA = r.removeFromTop (px (22));
-    r.removeFromTop (px (4));
-    auto rowB = r.removeFromTop (px (22));
-    {
-        ui.fluxOn.setBounds (rowA.removeFromLeft (px (74)));
-        ui.fluxMode.box.setBounds (rowA.removeFromLeft (px (170)));
-        ui.gritOn.setBounds (rowB.removeFromLeft (px (74)));
-        ui.gritMode.box.setBounds (rowB.removeFromLeft (px (170)));
-    }
-    {
-        auto a = area.reduced (px (12), px (10));
-        auto rowA2 = juce::Rectangle<int> (a.getX(), rowA.getY(), a.getWidth(), rowA.getHeight());
-        auto rowB2 = juce::Rectangle<int> (a.getX(), rowB.getY(), a.getWidth(), rowB.getHeight());
-        ui.snap.label.setFont (font (11.0f));
-        ui.snap.label.setBounds (rowA2.removeFromLeft (px (62)));
-        ui.snap.box.setBounds (rowA2.removeFromLeft (px (104)));
-        rowA2.removeFromLeft (px (12));
-        auto place = [&] (LabelledSlider& ls, juce::Rectangle<int> cell, int labelW)
-        {
-            ls.label.setFont (font (11.0f));
-            ls.label.setBounds (cell.removeFromLeft (px ((float) labelW)));
-            ls.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, px (48), px (18));
-            ls.slider.setBounds (cell);
-        };
-        place (ui.offset, rowA2, 64);
-        const int half = rowB2.getWidth() / 2;
-        place (ui.envLength, rowB2.removeFromLeft (half - px (6)), 64);
-        rowB2.removeFromLeft (px (12));
-        place (ui.window, rowB2, 50);
-    }
+    // knobs around the ring: position left, mix top right, size lower left, envelope lower right, pitch in the middle
+    placeKnob (ui.knobs[2].slider, ui.knobs[2].label, s, X (kRingCX), kRingCY - 12.0f, 100.0f, 124.0f, true);
+    placeKnob (ui.knobs[0].slider, ui.knobs[0].label, s, X (45), 235.0f, 64.0f, 124.0f, false);
+    placeKnob (ui.knobs[4].slider, ui.knobs[4].label, s, X (470), 150.0f, 64.0f, 124.0f, false);
+    placeKnob (ui.knobs[5].slider, ui.knobs[5].label, s, X (490), 300.0f, 56.0f, 124.0f, false);
+    placeKnob (ui.knobs[1].slider, ui.knobs[1].label, s, X (45), 435.0f, 64.0f, 124.0f, false);
+    placeKnob (ui.knobs[3].slider, ui.knobs[3].label, s, X (470), 450.0f, 64.0f, 124.0f, false);
+
+    // pads (the FIT button, buttons[7], lives on the setup page)
+    for (int i = 0; i < 7; ++i)
+        ui.buttons[(size_t) i].setBounds (px (boxLeft (20.0f + (float) i * 75.0f, 68)), px (550), px (68), px (34));
+
+    // mode extras: pitch snap, slice offset, env length, window
+    ui.snap.box.setBounds (px (boxLeft (0, 96)), px (630), px (96), px (24));
+    ui.snap.label.setFont (font (12.0f));
+    ui.snap.label.setJustificationType (just);
+    ui.snap.label.setBounds (px (boxLeft (0, 96)), px (658), px (96), px (16));
+    placeKnob (ui.offset.slider,    ui.offset.label,    s, X (150), 640.0f, 44.0f, 92.0f, false);
+    placeKnob (ui.envLength.slider, ui.envLength.label, s, X (245), 640.0f, 44.0f, 92.0f, false);
+    placeKnob (ui.window.slider,    ui.window.label,    s, X (340), 640.0f, 44.0f, 92.0f, false);
+
+    // Flux and Grit
+    const float fxY = 780.0f;
+    ui.fluxOn.setBounds (px (X (35) - 24.0f), px (fxY - 16.0f), px (48), px (44));
+    ui.gritOn.setBounds (px (X (305) - 24.0f), px (fxY - 16.0f), px (48), px (44));
+    static const float fxX[6] = { 100, 165, 230, 375, 440, 505 };
+    for (size_t i = 0; i < 6; ++i)
+        placeKnob (ui.fxKnobs[i].slider, ui.fxKnobs[i].label, s, X (fxX[i]), fxY, 44.0f, 64.0f, false);
+    ui.fluxMode.box.setBounds (px (boxLeft (105, 120)), px (862), px (120), px (24));
+    ui.gritMode.box.setBounds (px (boxLeft (380, 120)), px (862), px (120), px (24));
 }
 
 void UnofficialSpotykachEditor::resized()
 {
+    if (getWidth() <= 0) return;
     scale = (float) getWidth() / (float) kBaseWidth;
     const float s = scale;
     auto px = [s] (float v) { return juce::roundToInt (v * s); };
-    auto r = getLocalBounds().reduced (px (14), px (12));
 
-    // Top bar.
-    auto top = r.removeFromTop (px (34));
-    aboutButton.setBounds (top.removeFromRight (px (70)).reduced (0, px (3)));
-    top.removeFromRight (px (8));
-    versionLabel.setFont (font (12.0f));
-    versionLabel.setBounds (top.removeFromRight (px (170)));
-    titleLabel.setFont (juce::Font (juce::FontOptions (24.0f * s).withStyle ("Bold").withKerningFactor (0.12f)));
-    titleLabel.setBounds (top.removeFromLeft (px (190)));
-    unofficialLabel.setFont (juce::Font (juce::FontOptions (11.0f * s).withStyle ("Bold").withKerningFactor (0.1f)));
-    unofficialLabel.setBounds (top.removeFromLeft (px (92)).reduced (0, px (6)));
-    top.removeFromLeft (px (10));
-    taglineLabel.setFont (font (11.0f));
-    taglineLabel.setBounds (top);
-    r.removeFromTop (px (8));
+    // top bar
+    titleLabel.setFont (juce::Font (juce::FontOptions (26.0f * s)));
+    titleLabel.setBounds (px (30), px (22), px (420), px (34));
+    versionLabel.setFont (font (11.0f));
+    versionLabel.setBounds (px (30), px (54), px (320), px (14));
+    hintLabel.setFont (font (12.0f));
+    hintLabel.setBounds (px (560), px (31), px (610), px (16));
+    aboutButton.setBounds (px (1180), px (26), px (70), px (26));
 
-    // Deck A | centre | Deck B.
-    auto decks = r.removeFromTop (px (376));
-    const int deckW = px (428), gap = px (10);
-    layoutDeck (0, decks.removeFromLeft (deckW), s);
-    decks.removeFromLeft (gap);
-    auto deckBArea = decks.removeFromRight (deckW);
-    decks.removeFromRight (gap);
-    layoutDeck (1, deckBArea, s);
-    auto centre = decks;
-    centrePanel = centre.toFloat();
+    layoutDeck (0, s);
+    layoutDeck (1, s);
+
+    // centre column
+    auto small = [&] (juce::Label& l, float size) { l.setFont (font (size)); };
+    small (tempoSource.label, 12.0f);
+    tempoSource.label.setBounds (px (560), px (96), px (160), px (16));
+    tempoSource.box.setBounds (px (590), px (116), px (100), px (26));
+    placeKnob (tempo.slider, tempo.label, s, 640.0f, 200.0f, 76.0f, 124.0f, true);
+    tapButton.setBounds (px (610), px (308), px (60), px (26));
+    small (quantise.label, 12.0f);
+    quantise.label.setBounds (px (560), px (342), px (160), px (16));
+    quantise.box.setBounds (px (580), px (360), px (120), px (26));
+    small (routeLabel, 12.0f);
+    routeLabel.setBounds (px (560), px (394), px (160), px (14));
+    for (int i = 0; i < 3; ++i)
+        routeBtn[(size_t) i].setBounds (px (590), px (412 + i * 21), px (116), px (20));
+    small (abLabel[0], 12.0f);
+    small (abLabel[1], 12.0f);
+    abLabel[0].setBounds (px (560), px (484), px (160), px (16));
+    abLabel[1].setBounds (px (560), px (636), px (160), px (16));
+    crossfade.slider.getProperties().set ("gap", px (24));
+    crossfade.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, px (124), px (22));
+    crossfade.slider.setBounds (px (578), px (504), px (124), px (124) + px (24) + px (22));
+    small (crossfade.label, 12.0f);
+    crossfade.label.setBounds (px (578), px (676), px (124), px (16));
+    placeKnob (click.slider, click.label, s, 640.0f, 728.0f, 44.0f, 124.0f, false);
+    meterArea = juce::Rectangle<float> (600.0f * s, 794.0f * s, 80.0f * s, 6.0f * s);
+    small (inputLabel, 10.0f);
+    inputLabel.setBounds (px (580), px (802), px (120), px (12));
+    placeKnob (outLevel.slider, outLevel.label, s, 640.0f, 840.0f, 44.0f, 124.0f, false);
+
+    // bottom: tabs and footer
     {
-        auto c = centre.reduced (px (10), px (10));
-        auto small = [&] (juce::Label& l) { l.setFont (font (10.5f)); };
-        auto labelRow = [&] (juce::Label& l, int h) { small (l); l.setBounds (c.removeFromTop (px ((float) h))); };
-        auto comboBlock = [&] (juce::Label& l, juce::ComboBox& b)
+        int x = px (30);
+        const int widths[5] = { 52, 52, 36, 46, 46 };
+        juce::TextButton* tabs[5] = { &setupTab, &modsTab, &cvTab, &midiTab, &filesTab };
+        for (int i = 0; i < 5; ++i)
         {
-            labelRow (l, 14);
-            b.setBounds (c.removeFromTop (px (24)));
-            c.removeFromTop (px (8));
-        };
-        auto sliderBlock = [&] (LabelledSlider& ls, int textW)
-        {
-            labelRow (ls.label, 14);
-            ls.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, px ((float) textW), px (20));
-            ls.slider.setBounds (c.removeFromTop (px (22)));
-            c.removeFromTop (px (8));
-        };
-        comboBlock (routeLabel, routeBox);
-        sliderBlock (crossfade, 50);
-        comboBlock (tempoSource.label, tempoSource.box);
-        {   // tempo: label with TAP on the same row
-            auto row = c.removeFromTop (px (18));
-            small (tempo.label);
-            tapButton.setBounds (row.removeFromRight (px (42)));
-            tempo.label.setBounds (row);
-            tempo.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, px (50), px (20));
-            tempo.slider.setBounds (c.removeFromTop (px (22)));
-            c.removeFromTop (px (8));
+            tabs[i]->setBounds (x, px (914), px ((float) widths[i]), px (24));
+            x += px ((float) widths[i] + 14.0f);
         }
-        comboBlock (quantise.label, quantise.box);
-        sliderBlock (click, 40);
-        sliderBlock (outLevel, 56);
-        inputLabel.setFont (font (10.5f));
-        inputLabel.setBounds (c.removeFromTop (px (14)));
-        meterArea = c.removeFromTop (px (8)).toFloat();
     }
-    r.removeFromTop (px (8));
+    footerLabel.setFont (font (11.0f));
+    footerLabel.setBounds (px (770), px (914), px (480), px (32));
+    footerArea = juce::Rectangle<int> (px (350), px (914), px (400), px (32));
 
-    // Bottom panel: tabs and the page.
+    // the lower page: a panel over the bottom part of the window
+    pageRect = juce::Rectangle<int> (px (20), px (704), px (1240), px (202));
+    if (pagePanel != nullptr) pagePanel->setBounds (pageRect);
     const int rowH = px (26);
+    auto pageArea = pageRect.reduced (px (24), px (16));
+    const int colGap = px (20);
     auto setLs = [&] (LabelledSlider& ls, juce::Rectangle<int> row, int labelW, int textW)
     {
         ls.label.setFont (font (12.0f));
@@ -972,21 +1171,6 @@ void UnofficialSpotykachEditor::resized()
         ls.slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, px ((float) textW), px (20));
         ls.slider.setBounds (row);
     };
-    auto panel = r.removeFromTop (px (10 + 26 + 6 + 120 + 8));
-    bottomPanel = panel.toFloat();
-    footerArea = r.removeFromTop (px (16));
-    auto inner = panel.reduced (px (12), px (10));
-    {
-        auto tabs = inner.removeFromTop (px (26));
-        for (auto* t : { &setupTab, &modsTab, &cvTab, &midiTab, &filesTab })
-        {
-            t->setBounds (tabs.removeFromLeft (px (72)));
-            tabs.removeFromLeft (px (4));
-        }
-    }
-    inner.removeFromTop (px (6));
-    auto pageArea = inner;
-    const int colGap = px (20);
     auto halves = [&] (juce::Rectangle<int> row, juce::Rectangle<int>& left, juce::Rectangle<int>& right)
     {
         left = row.removeFromLeft ((row.getWidth() - colGap) / 2);
@@ -1110,6 +1294,12 @@ void UnofficialSpotykachEditor::resized()
         }
     }
 
+
+    if (pagePanel != nullptr && page >= 0)
+    {
+        pagePanel->toFront (false);
+        for (auto* c : pageWidgets) c->toFront (false);
+    }
     if (about != nullptr)
         about->setBounds (getLocalBounds());
 
@@ -1117,6 +1307,7 @@ void UnofficialSpotykachEditor::resized()
         proc.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);   // remembered with the session
 }
 
+// ---- FILES page ----------------------------------------------------------------------------------------------
 // ---- FILES page ----------------------------------------------------------------------------------------------
 void UnofficialSpotykachEditor::chooseLoad (int d)
 {
@@ -1188,7 +1379,6 @@ void UnofficialSpotykachEditor::updateFilePage()
     }
     folderLabel.setText (proc.homeFolder().getFullPathName(), juce::dontSendNotification);
 }
-
 void UnofficialSpotykachEditor::timerCallback()
 {
     const float peak = proc.inputPeak.exchange (0.0f);
@@ -1206,7 +1396,7 @@ void UnofficialSpotykachEditor::timerCallback()
         else if (s.empty.load())     state = "EMPTY";
         else                         state = "STOPPED";
         const char* seq = s.seqRecording.load() ? "   SEQ REC" : s.seqArmed.load() ? "   SEQ ARMED" : s.seqHasData.load() ? "   SEQ" : "";
-        deckUI[d].status.setText (state + "   " + juce::String (s.loopSeconds.load(), 2) + " s" + seq, juce::dontSendNotification);
+        deckUI[d].status.setText ((state + seq).toLowerCase(), juce::dontSendNotification);
 
         auto& ui = deckUI[d];
         ui.buttons[5].setToggleState (s.seqArmed.load() || s.seqRecording.load(), juce::dontSendNotification);
@@ -1295,10 +1485,11 @@ void UnofficialSpotykachEditor::timerCallback()
 
     const bool hostSource = juce::roundToInt (proc.apvts.getRawParameterValue ("tempoSource")->load()) == 1;
     tempo.slider.setEnabled (! hostSource);
-    tempo.label.setText (! hostSource ? "Tempo" : (st.hostLocked.load() ? "Locked" : "Host"), juce::dontSendNotification);
+    tempo.label.setText (! hostSource ? "tempo" : (st.hostLocked.load() ? "locked" : "host"), juce::dontSendNotification);
 
     const bool generative = juce::roundToInt (routeBox.getSelectedId()) == 3;
     panSpeed.slider.setEnabled (generative);
     panRange.slider.setEnabled (generative);
+    for (size_t i = 0; i < 3; ++i) routeBtn[i].setToggleState (routeBox.getSelectedItemIndex() == (int) i, juce::dontSendNotification);
     repaint();
 }

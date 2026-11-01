@@ -100,7 +100,7 @@ int main()
             if (auto* t = proc.apvts.getParameter ("modB_target")) t->setValueNotifyingHost (t->convertTo0to1 ((float) (11 - tg)));
             run (2);
         }
-        for (int w : { 783, 1044, 1400, 1566 })
+        for (int w : { 960, 1280, 1600, 1044 })
         {
             ed->setSize (w, (int) std::lround (w * (double) UnofficialSpotykachEditor::kBaseHeight / (double) UnofficialSpotykachEditor::kBaseWidth));
             auto snap = ed->createComponentSnapshot (ed->getLocalBounds());
@@ -121,39 +121,18 @@ int main()
         CHECK (! proc.engineStatus().deck[0].empty.load());
         ed.reset();
 
-        // FX page on both decks, then back
-        {
-            std::unique_ptr<juce::AudioProcessorEditor> e3 (proc.createEditor());
-            int pressed = 0;
-            for (int pass = 0; pass < 2; ++pass)
-            {
-                for (int i = 0; i < e3->getNumChildComponents(); ++i)
-                    if (auto* b = dynamic_cast<juce::TextButton*> (e3->getChildComponent (i)))
-                        if (b->getButtonText() == "FX") { b->setToggleState (pass == 0, juce::dontSendNotification); b->onClick(); if (pass == 0) ++pressed; }
-                auto snap = e3->createComponentSnapshot (e3->getLocalBounds());
-                CHECK (snap.isValid());
-                if (pass == 0)
-                    if (const char* dir = std::getenv ("US_SNAPSHOT_DIR"))
-                    {
-                        juce::FileOutputStream os (juce::File (dir).getChildFile ("editor_fx.png"));
-                        if (os.openedOk()) { os.setPosition (0); os.truncate(); juce::PNGImageFormat().writeImageToStream (snap, os); }
-                    }
-            }
-            CHECK (pressed == 2);
-        }
-
-        // MODS page, then back to SETUP
+        // Open each lower page from its tab (the tabs are lower case)
         {
             std::unique_ptr<juce::AudioProcessorEditor> e4 (proc.createEditor());
             int found = 0;
-            for (const char* name : { "MODS", "CV", "MIDI", "FILES", "SETUP" })
+            for (const char* name : { "mods", "cv", "midi", "files", "setup" })
             {
                 for (int i = 0; i < e4->getNumChildComponents(); ++i)
                     if (auto* b = dynamic_cast<juce::TextButton*> (e4->getChildComponent (i)))
                         if (b->getButtonText() == name) { b->onClick(); ++found; }
                 auto snap = e4->createComponentSnapshot (e4->getLocalBounds());
                 CHECK (snap.isValid());
-                if (juce::String (name) != "SETUP")
+                if (juce::String (name) != "setup")
                     if (const char* dir = std::getenv ("US_SNAPSHOT_DIR"))
                     {
                         juce::FileOutputStream os (juce::File (dir).getChildFile ("editor_" + juce::String (name).toLowerCase() + ".png"));
@@ -164,7 +143,7 @@ int main()
         }
 
         // Closing and reopening the window must restore the last size.
-        for (int w : { 1200, 800 })
+        for (int w : { 1200, 1000 })
         {
             std::unique_ptr<juce::AudioProcessorEditor> e1 (proc.createEditor());
             e1->setSize (w, (int) std::lround (w * (double) UnofficialSpotykachEditor::kBaseHeight / (double) UnofficialSpotykachEditor::kBaseWidth));
