@@ -897,6 +897,7 @@ UnofficialSpotykachEditor::UnofficialSpotykachEditor (UnofficialSpotykachProcess
     // setSize() calls resized(), so it must come after every child component exists.
     setSize (w, (int) std::lround ((double) w * kBaseHeight / kBaseWidth));
     sizeRemembering = true;
+    proc.apvts.state.setProperty ("uiWidth", getWidth(), nullptr);   // also when the first size equals the current one (setSize() would not call resized())
 
     startTimerHz (30);
     timerCallback();
